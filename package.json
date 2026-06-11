@@ -1,0 +1,21 @@
+{
+  "name": "hr-workspace",
+  "version": "1.0.0",
+  "description": "소규모 인사·총무 팀을 위한 입퇴사자 관리 워크스페이스",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "migrate": "node lib/migrate.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "pg": "^8.13.1"
+  },
+  "devDependencies": {
+    "pg-mem": "^3.0.5"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}
