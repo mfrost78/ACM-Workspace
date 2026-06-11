@@ -60,6 +60,12 @@ function clearSessionCookie(res) {
 // async 핸들러 래퍼
 const wrap = (fn) => (req, res, next) => Promise.resolve(fn(req, res)).catch(next);
 
+// 관리자 권한 확인 미들웨어 (requireAuth 이후 사용)
+function requireAdmin(req, res, next) {
+  if (req.user.role !== 'admin') return res.status(403).json({ error: '관리자 권한이 필요합니다.' });
+  next();
+}
+
 // 응답을 막지 않는 백그라운드 동기화 작업 (실패해도 요청에는 영향 없음)
 const bg = (promise) => { promise.catch(e => console.error('백그라운드 동기화 오류:', e)); };
 
@@ -131,7 +137,7 @@ app.post('/api/auth/login', wrap(async (req, res) => {
   const token = await createSession(user.id);
   setSessionCookie(res, token);
   await logActivity({ userId: user.id, userName: user.name, action: '로그인' });
-  res.json({ user: { id: user.id, username: user.username, name: user.name, role: user.role, must_change_pw: !!user.must_change_pw } });
+  res.json({ user: { id: user.id, username: user.username, name: user.name, role: user.role, color: user.color, must_change_pw: !!user.must_change_pw } });
 }));
 
 app.post('/api/auth/logout', wrap(async (req, res) => {
@@ -159,7 +165,57 @@ app.post('/api/auth/password', requireAuth, wrap(async (req, res) => {
 
 /* ---------------- Users ---------------- */
 app.get('/api/users', requireAuth, wrap(async (req, res) => {
-  res.json(await q('SELECT id, username, name, role FROM users ORDER BY id'));
+  res.json(await q('SELECT id, username, name, role, color FROM users ORDER BY id'));
+}));
+
+app.post('/api/users', requireAuth, requireAdmin, wrap(async (req, res) => {
+  const { username, name, password, role, color } = req.body || {};
+  if (!username || !name || !password) return res.status(400).json({ error: '아이디·이름·비밀번호는 필수입니다.' });
+  if (password.length < 8) return res.status(400).json({ error: '비밀번호는 8자 이상이어야 합니다.' });
+  if (role && !['admin', 'member'].includes(role)) return res.status(400).json({ error: '역할 값이 올바르지 않습니다.' });
+  const dup = await one('SELECT id FROM users WHERE username = ?', [username]);
+  if (dup) return res.status(409).json({ error: '이미 사용 중인 아이디입니다.' });
+  const row = await one(
+    `INSERT INTO users (username, name, password_hash, role, color, must_change_pw) VALUES (?, ?, ?, ?, ?, 1) RETURNING id, username, name, role, color`,
+    [username, name, hashPassword(password), role || 'member', color || '#0071e3']
+  );
+  await logActivity({ userId: req.user.id, userName: req.user.name, action: '사용자 추가', targetType: 'user', targetId: row.id, detail: `${name} (${username})` });
+  res.json(row);
+}));
+
+app.put('/api/users/:id', requireAuth, requireAdmin, wrap(async (req, res) => {
+  const id = Number(req.params.id);
+  const { name, role, color, password } = req.body || {};
+  const user = await one('SELECT * FROM users WHERE id = ?', [id]);
+  if (!user) return res.status(404).json({ error: '없음' });
+  if (role && !['admin', 'member'].includes(role)) return res.status(400).json({ error: '역할 값이 올바르지 않습니다.' });
+  if (role && role !== 'admin' && user.role === 'admin') {
+    const admins = await one(`SELECT COUNT(*)::int AS c FROM users WHERE role = 'admin'`);
+    if (admins.c <= 1) return res.status(400).json({ error: '최소 1명의 관리자가 필요합니다.' });
+  }
+  if (password && password.length < 8) return res.status(400).json({ error: '비밀번호는 8자 이상이어야 합니다.' });
+  await run(
+    `UPDATE users SET name = ?, role = ?, color = ?, password_hash = ?, must_change_pw = ? WHERE id = ?`,
+    [name ?? user.name, role ?? user.role, color ?? user.color,
+     password ? hashPassword(password) : user.password_hash,
+     password ? 1 : user.must_change_pw, id]
+  );
+  await logActivity({ userId: req.user.id, userName: req.user.name, action: '사용자 정보 수정', targetType: 'user', targetId: id, detail: name ?? user.name });
+  res.json({ ok: true });
+}));
+
+app.delete('/api/users/:id', requireAuth, requireAdmin, wrap(async (req, res) => {
+  const id = Number(req.params.id);
+  if (id === req.user.id) return res.status(400).json({ error: '본인 계정은 삭제할 수 없습니다.' });
+  const user = await one('SELECT * FROM users WHERE id = ?', [id]);
+  if (!user) return res.status(404).json({ error: '없음' });
+  if (user.role === 'admin') {
+    const admins = await one(`SELECT COUNT(*)::int AS c FROM users WHERE role = 'admin'`);
+    if (admins.c <= 1) return res.status(400).json({ error: '최소 1명의 관리자가 필요합니다.' });
+  }
+  await run('DELETE FROM users WHERE id = ?', [id]);
+  await logActivity({ userId: req.user.id, userName: req.user.name, action: '사용자 삭제', targetType: 'user', targetId: id, detail: `${user.name} (${user.username})` });
+  res.json({ ok: true });
 }));
 
 /* ---------------- Employees ---------------- */

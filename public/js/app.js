@@ -134,7 +134,12 @@ const NAV = [
   { sec: '데이터' },
   { id: 'employees', ic: '👥', label: '재직자 현황' },
   { id: 'activity', ic: '🕑', label: '활동 기록' },
+  { sec: '관리', adminOnly: true },
+  { id: 'users', ic: '🔑', label: '사용자 관리', adminOnly: true },
 ];
+
+// 사용자 색상 선택용 추천 팔레트
+const USER_COLORS = ['#0071e3', '#34c759', '#ff9500', '#ff3b30', '#af52de', '#5856d6', '#00b8d9', '#8e8e93'];
 
 let dash = {};
 async function render() {
@@ -147,7 +152,7 @@ async function render() {
       <div class="brand"><span class="logo">🗂️</span>
         <span class="name">HR Workspace<small>입퇴사자 관리</small></span></div>
       <nav class="nav" id="nav">
-        ${NAV.map(n => n.sec
+        ${NAV.filter(n => !n.adminOnly || u.role === 'admin').map(n => n.sec
           ? `<div class="nav-sep">${n.sec}</div>`
           : `<button class="nav-item ${state.route === n.id ? 'active' : ''}" data-route="${n.id}">
                <span class="ic">${n.ic}</span><span>${n.label}</span>
@@ -156,7 +161,7 @@ async function render() {
       </nav>
       <div class="side-foot">
         <div class="user-chip">
-          <div class="avatar">${esc(initial)}</div>
+          <div class="avatar" style="background:${esc(u.color || 'var(--accent)')}">${esc(initial)}</div>
           <div class="meta"><b>${esc(u.name)}</b><span>${esc(u.username)} · ${u.role === 'admin' ? '관리자' : '담당자'}</span></div>
         </div>
         <div class="flex mt8" style="padding:0 4px">
@@ -177,7 +182,7 @@ async function render() {
 
   const view = $('#view');
   ({ dashboard: viewDashboard, onboarding: viewOnboarding, offboarding: viewOffboarding,
-     calendar: viewCalendar, employees: viewEmployees, activity: viewActivity }[state.route] || viewDashboard)(view);
+     calendar: viewCalendar, employees: viewEmployees, activity: viewActivity, users: viewUsers }[state.route] || viewDashboard)(view);
 
   refreshBadges();
 }
@@ -835,6 +840,93 @@ async function openEmpModal(id) {
   });
 }
 
+/* ============ 사용자 관리 ============ */
+async function viewUsers(view) {
+  view.innerHTML = topbar('사용자 관리', `<button class="btn btn-primary" id="addUser">＋ 사용자 추가</button>`);
+  wireTopbar(view);
+  $('#addUser', view).addEventListener('click', () => openUserModal());
+  const wrap = document.createElement('div'); view.appendChild(wrap);
+
+  async function draw() {
+    const rows = await api('GET', '/users');
+    wrap.innerHTML = `
+      <div class="card"><div class="card-body"><div class="table-wrap">
+        <table class="tbl"><thead><tr>
+          <th>색상</th><th>아이디</th><th>이름</th><th>역할</th><th></th>
+        </tr></thead><tbody>
+        ${rows.map(r => `<tr data-id="${r.id}">
+          <td><span class="color-swatch" style="background:${esc(r.color)}"></span></td>
+          <td class="t-muted">${esc(r.username)}</td>
+          <td class="t-strong">${esc(r.name)}</td>
+          <td><span class="pill ${r.role === 'admin' ? 'blue' : 'gray'}">${r.role === 'admin' ? '관리자' : '담당자'}</span></td>
+          <td class="t-right">
+            <button class="btn btn-sm" data-edit="${r.id}">수정</button>
+            <button class="btn btn-sm btn-danger" data-del="${r.id}" ${r.id === state.user.id ? 'disabled' : ''}>삭제</button>
+          </td>
+        </tr>`).join('')}
+        </tbody></table>
+      </div></div></div>`;
+    wrap.querySelectorAll('[data-edit]').forEach(b => b.addEventListener('click', () => {
+      const row = rows.find(r => r.id === Number(b.dataset.edit));
+      openUserModal(row, draw);
+    }));
+    wrap.querySelectorAll('[data-del]').forEach(b => b.addEventListener('click', async () => {
+      const row = rows.find(r => r.id === Number(b.dataset.del));
+      if (!confirm(`'${row.name}(${row.username})' 사용자를 삭제할까요?`)) return;
+      try { await api('DELETE', `/users/${row.id}`); toast('삭제되었습니다'); draw(); }
+      catch (e) { toast(e.message, true); }
+    }));
+  }
+  draw();
+}
+
+function openUserModal(d, onSaved) {
+  const editing = !!d;
+  const color = d?.color || USER_COLORS[0];
+  const swatches = USER_COLORS.map(c => `<span class="color-swatch ${c === color ? 'sel' : ''}" data-color="${c}" style="background:${c}"></span>`).join('');
+  openModal(`
+    <div class="modal-head"><h3>사용자 ${editing ? '수정' : '추가'}</h3><button class="x" data-x>×</button></div>
+    <div class="modal-body"><form id="userForm" class="form-grid">
+      <div class="field"><label>아이디 *</label><input class="input" name="username" value="${esc(d?.username || '')}" ${editing ? 'readonly' : 'required'}></div>
+      <div class="field"><label>이름 *</label><input class="input" name="name" value="${esc(d?.name || '')}" required></div>
+      <div class="field"><label>역할</label><select class="select" name="role">
+        <option value="member" ${d?.role !== 'admin' ? 'selected' : ''}>담당자</option>
+        <option value="admin" ${d?.role === 'admin' ? 'selected' : ''}>관리자</option>
+      </select></div>
+      <div class="field"><label>${editing ? '비밀번호 재설정 (선택, 8자 이상)' : '비밀번호 * (8자 이상)'}</label>
+        <input class="input" name="password" type="password" ${editing ? '' : 'required'}></div>
+      <div class="field full"><label>구분 색상</label>
+        <div class="color-picker">
+          <input type="color" class="color-input" name="color" value="${color}">
+          <div class="swatches">${swatches}</div>
+        </div>
+      </div>
+    </div></form></div>
+    <div class="modal-foot"><div class="spacer"></div>
+      <button class="btn" data-x>취소</button><button class="btn btn-primary" id="saveUser">${editing ? '저장' : '추가'}</button>
+    </div>`);
+  const root = $('#modal-root');
+  root.querySelectorAll('[data-x]').forEach(b => b.addEventListener('click', closeModal));
+  const colorInput = $('.color-input', root);
+  root.querySelectorAll('.swatches .color-swatch').forEach(sw => sw.addEventListener('click', () => {
+    colorInput.value = sw.dataset.color;
+    root.querySelectorAll('.swatches .color-swatch').forEach(s => s.classList.toggle('sel', s === sw));
+  }));
+  colorInput.addEventListener('input', () => {
+    root.querySelectorAll('.swatches .color-swatch').forEach(s => s.classList.toggle('sel', s.dataset.color.toLowerCase() === colorInput.value.toLowerCase()));
+  });
+  $('#saveUser', root).addEventListener('click', async () => {
+    const body = Object.fromEntries(new FormData($('#userForm', root)).entries());
+    if (!body.password) delete body.password;
+    if (!editing && (!body.password || body.password.length < 8)) return toast('비밀번호는 8자 이상이어야 합니다', true);
+    try {
+      if (editing) await api('PUT', `/users/${d.id}`, body); else await api('POST', '/users', body);
+      toast('저장되었습니다'); closeModal();
+      if (onSaved) onSaved(); else render();
+    } catch (e) { toast(e.message, true); }
+  });
+}
+
 /* ============ 활동 기록 ============ */
 async function viewActivity(view) {
   view.innerHTML = topbar('활동 기록');
@@ -857,7 +949,7 @@ function openSettings() {
       <div class="section-title" style="margin-top:0">비밀번호 변경</div>
       <form id="pwForm" class="form-grid">
         <div class="field full"><label>현재 비밀번호</label><input class="input" name="current" type="password" required></div>
-        <div class="field full"><label>새 비밀번호 (4자 이상)</label><input class="input" name="next" type="password" required></div>
+        <div class="field full"><label>새 비밀번호 (8자 이상)</label><input class="input" name="next" type="password" required></div>
       </form>
     </div>
     <div class="modal-foot"><div class="spacer"></div><button class="btn" data-x>닫기</button>

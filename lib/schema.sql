@@ -7,9 +7,11 @@ CREATE TABLE IF NOT EXISTS users (
   name           text NOT NULL,
   password_hash  text NOT NULL,
   role           text NOT NULL DEFAULT 'member',
+  color          text NOT NULL DEFAULT '#0071e3',
   must_change_pw int  NOT NULL DEFAULT 0,
   created_at     timestamptz NOT NULL DEFAULT now()
 );
+ALTER TABLE users ADD COLUMN IF NOT EXISTS color text NOT NULL DEFAULT '#0071e3';
 
 CREATE TABLE IF NOT EXISTS sessions (
   token      text PRIMARY KEY,
