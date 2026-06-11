@@ -413,19 +413,27 @@ async function openEntryModal(kind, data) {
   const empSuggest = $('#empSuggest', root);
   if (empSearch) {
     const norm = (s) => String(s || '').toLowerCase();
-    empSearch.addEventListener('input', () => {
-      const term = norm(empSearch.value).trim();
-      if (!term) { empSuggest.innerHTML = ''; empSuggest.classList.remove('open'); return; }
-      const matches = empList.filter(e =>
-        norm(e.name).includes(term) || norm(e.emp_no).includes(term) || norm(e.dept).includes(term) || norm(e.org).includes(term)
-      ).slice(0, 8);
-      if (!matches.length) { empSuggest.innerHTML = `<div class="suggest-empty">검색 결과 없음</div>`; empSuggest.classList.add('open'); return; }
-      empSuggest.innerHTML = matches.map(e => `<div class="suggest-item" data-id="${e.id}"
+    const sortedEmpList = [...empList].sort((a, b) => String(a.name || '').localeCompare(String(b.name || ''), 'ko'));
+    function renderSuggest(list) {
+      if (!list.length) { empSuggest.innerHTML = `<div class="suggest-empty">검색 결과 없음</div>`; empSuggest.classList.add('open'); return; }
+      empSuggest.innerHTML = list.map(e => `<div class="suggest-item" data-id="${e.id}"
           data-name="${esc(e.name)}" data-emp_no="${esc(e.emp_no || '')}" data-position="${esc(e.position || '')}"
           data-field="${esc(e.field || '')}" data-org="${esc(e.org || '')}" data-join_date="${esc(e.join_date || '')}">
           <b>${esc(e.name)}</b> ${e.emp_no ? `<span class="t-muted">${esc(e.emp_no)}</span>` : ''}${e.dept ? ` <span class="t-muted">· ${esc(e.dept)}</span>` : ''}
         </div>`).join('');
       empSuggest.classList.add('open');
+    }
+    empSearch.addEventListener('focus', () => {
+      const term = norm(empSearch.value).trim();
+      if (!term) renderSuggest(sortedEmpList);
+    });
+    empSearch.addEventListener('input', () => {
+      const term = norm(empSearch.value).trim();
+      if (!term) { renderSuggest(sortedEmpList); return; }
+      const matches = empList.filter(e =>
+        norm(e.name).includes(term) || norm(e.emp_no).includes(term) || norm(e.dept).includes(term) || norm(e.org).includes(term)
+      );
+      renderSuggest(matches);
     });
     empSuggest.addEventListener('click', e => {
       const it = e.target.closest('.suggest-item');
@@ -612,6 +620,13 @@ async function listView(view, kind) {
         }).join('') : `<tr><td colspan="${colCount}"><div class="empty"><div class="big">🗂️</div>${isOn ? '입사' : '퇴사'} 항목이 없습니다.<br>우측 상단에서 등록하세요.</div></td></tr>`}
         </tbody></table>
       </div></div></div>`;
+
+    // sel-col의 실제 렌더링 너비에 맞춰 name-col의 sticky 위치를 동적으로 보정
+    const selColEl = wrap.querySelector('table.xls-tbl thead .sel-col');
+    if (selColEl) {
+      const w = Math.ceil(selColEl.getBoundingClientRect().width);
+      wrap.querySelectorAll('table.xls-tbl .name-col').forEach(el => { el.style.left = `${w}px`; });
+    }
 
     wrap.querySelector('.seg').addEventListener('click', e => {
       const b = e.target.closest('[data-st]'); if (!b) return; filter.state = b.dataset.st; draw();

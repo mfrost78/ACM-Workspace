@@ -60,6 +60,9 @@ function clearSessionCookie(res) {
 // async 핸들러 래퍼
 const wrap = (fn) => (req, res, next) => Promise.resolve(fn(req, res)).catch(next);
 
+// 응답을 막지 않는 백그라운드 동기화 작업 (실패해도 요청에는 영향 없음)
+const bg = (promise) => { promise.catch(e => console.error('백그라운드 동기화 오류:', e)); };
+
 // KST 기준 오늘 날짜 ('YYYY-MM-DD')
 function kstTodayStr() {
   return new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 10);
@@ -171,7 +174,7 @@ app.get('/api/employees/meta', requireAuth, wrap(async (req, res) => {
 }));
 
 app.get('/api/employees', requireAuth, wrap(async (req, res) => {
-  await autoCompleteDueOnboarding(req.user);
+  bg(autoCompleteDueOnboarding(req.user));
   const { status, q: term, field, org } = req.query;
   const where = [], params = [];
   if (status) { where.push('status = ?'); params.push(status); }
@@ -224,8 +227,8 @@ const ONB_FIELDS = ['emp_no', 'name', 'category', 'position', 'org', 'field', 'j
 const tasksVal = (b) => JSON.stringify(b.tasks || {});
 
 app.get('/api/onboarding', requireAuth, wrap(async (req, res) => {
-  await autoCompleteDueOnboarding(req.user);
-  await syncCompletionStates('onboarding', ONBOARDING_TASKS, false);
+  bg(autoCompleteDueOnboarding(req.user));
+  bg(syncCompletionStates('onboarding', ONBOARDING_TASKS, false));
   const { state } = req.query;
   const sql = `SELECT * FROM onboarding ${state ? 'WHERE state = ?' : ''} ORDER BY join_date DESC, id DESC`;
   res.json(await q(sql, state ? [state] : []));
@@ -295,7 +298,7 @@ app.post('/api/onboarding/bulk-delete', requireAuth, wrap(async (req, res) => {
 const OFB_FIELDS = ['emp_no', 'name', 'category', 'position', 'org', 'field', 'join_date', 'leave_date', 'resign_date', 'resign_reason', 'tasks', 'state', 'employee_id'];
 
 app.get('/api/offboarding', requireAuth, wrap(async (req, res) => {
-  await syncCompletionStates('offboarding', OFFBOARDING_TASKS, true);
+  bg(syncCompletionStates('offboarding', OFFBOARDING_TASKS, true));
   const { state } = req.query;
   const sql = `SELECT * FROM offboarding ${state ? 'WHERE state = ?' : ''} ORDER BY leave_date DESC, id DESC`;
   res.json(await q(sql, state ? [state] : []));
@@ -374,7 +377,7 @@ app.post('/api/offboarding/bulk-delete', requireAuth, wrap(async (req, res) => {
 
 /* ---------------- Calendar ---------------- */
 app.get('/api/calendar', requireAuth, wrap(async (req, res) => {
-  await autoCompleteDueOnboarding(req.user);
+  bg(autoCompleteDueOnboarding(req.user));
   const { from, to } = req.query;
   const events = [];
   const onb = await q(`SELECT id, name, join_date, category, state, tasks FROM onboarding WHERE join_date <> ''`);
@@ -406,7 +409,7 @@ app.get('/api/calendar', requireAuth, wrap(async (req, res) => {
 
 /* ---------------- Dashboard / Activity ---------------- */
 app.get('/api/dashboard', requireAuth, wrap(async (req, res) => {
-  await autoCompleteDueOnboarding(req.user);
+  bg(autoCompleteDueOnboarding(req.user));
   const cnt = async (sql, p = []) => (await one(sql, p)).c;
   const [empActive, empLeave, onbOpen, ofbOpen] = await Promise.all([
     cnt(`SELECT COUNT(*)::int c FROM employees WHERE status='재직'`),

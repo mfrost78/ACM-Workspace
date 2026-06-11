@@ -209,7 +209,7 @@ table.tbl tbody tr:last-child td { border-bottom: none; }
 table.xls-tbl th, table.xls-tbl td { white-space: nowrap; }
 table.xls-tbl .sticky-col { position: sticky; background: var(--bg-elevated); z-index: 1; }
 table.xls-tbl .sticky-col.sel-col { left: 0; z-index: 2; }
-table.xls-tbl .sticky-col.name-col { left: 44px; }
+table.xls-tbl .sticky-col.name-col { left: 36px; }
 table.xls-tbl tbody tr:hover { cursor: default; }
 table.xls-tbl tbody tr:hover .sticky-col { background: var(--bg-hover); }
 table.xls-tbl td.cell-na { color: var(--text-3); text-align: center; }
@@ -286,9 +286,9 @@ table.xls-tbl .cell-select.tone-na   { background-color: var(--tone-na-bg);   co
 .cal-cell.today .dnum { background: var(--accent); color: #fff; border-radius: 50%; width: 22px; height: 22px; display: grid; place-items: center; }
 .cal-ev { font-size: 11.5px; font-weight: 600; padding: 2px 7px; border-radius: 6px; display: flex; align-items: center; gap: 5px;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
-.cal-ev.in { background: rgba(52,199,89,.16); color: var(--tone-done-fg); }
-.cal-ev.out { background: rgba(255,59,48,.14); color: var(--red); }
-.cal-ev.eval { background: rgba(10,132,255,.14); color: var(--accent); }
+.cal-ev.in { background: rgba(52,199,89,.22); color: #1f7a35; box-shadow: inset 3px 0 0 0 var(--green); }
+.cal-ev.out { background: rgba(255,59,48,.2); color: #d6342a; box-shadow: inset 3px 0 0 0 var(--red); }
+.cal-ev.eval { background: rgba(10,132,255,.18); color: var(--accent); box-shadow: inset 3px 0 0 0 var(--accent); }
 .cal-ev.done-state { opacity: .55; }
 
 /* legend */
