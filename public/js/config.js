@@ -143,5 +143,25 @@ export function deriveState(taskDefs, category, tasks) {
   return progress(taskDefs, category, tasks) === 100 ? '완료' : '진행중';
 }
 
+/* ===== 업무 To-Do ===== */
+export const TODO_STATUS = ['진행중', '완료', '취소'];
+export const TODO_PRIORITY = ['초비상', '우선', '보통', '여유'];
+
+// 프로젝트 레벨 구분(4종)
+export const PROJECT_CATEGORIES = ['인사', '총무', '기획', '기타'];
+
+// 하위업무 레벨 구분2 — 상위 구분별 상세 항목
+export const TASK_SUBCATEGORIES = {
+  '인사': ['급여', '연차', '퇴직금', '수당', '노무', '고충처리', '인증'],
+  '총무': ['경비', '차량', '부동산', '전산', '기타자산', '유지보수'],
+  '기획': ['경영계획', '실적관리', '계약/실행', '리스크관리', '검토업무', '부서조율'],
+  '기타': ['회의', '행사', '기타'],
+};
+
+// 상태 → 색상 톤
+export const TODO_STATUS_TONE = { '진행중': 'todo', '완료': 'done', '취소': 'na' };
+// 중요도 → 색상 톤(badge)
+export const PRIORITY_TONE = { '초비상': 'crit', '우선': 'high', '보통': 'mid', '여유': 'low' };
+
 export const POSITIONS = ['사원', '주임', '대리', '과장', '차장', '부장', '이사대우', '이사', '상무', '전무', '부사장', '사장', '기술책임수석', '기술책임수석(STO)', '관리소장', '영선원', '미화원'];
 export const FIELDS = ['건축', '토목', '기계', '전기', '통신', '소방', '조경', '설계', '구조', '안전', '안전/환경', '사무', '재무', '총무', '마케팅', '운영사업'];

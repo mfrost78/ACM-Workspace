@@ -2,6 +2,8 @@ import {
   CATEGORIES, OPTS, STATE_TONE, ONBOARDING_TASKS, OFFBOARDING_TASKS,
   activeTasks, computeDate, progress, defaultTasks, POSITIONS, FIELDS,
   under1Year, effectiveTasks,
+  TODO_STATUS, TODO_PRIORITY, PROJECT_CATEGORIES, TASK_SUBCATEGORIES,
+  TODO_STATUS_TONE, PRIORITY_TONE,
 } from './config.js';
 
 /* ============ 유틸 ============ */
@@ -131,6 +133,8 @@ const NAV = [
   { id: 'onboarding', ic: '📥', label: '입사자 관리', badgeKey: 'onbOpen' },
   { id: 'offboarding', ic: '📤', label: '퇴사자 관리', badgeKey: 'ofbOpen' },
   { id: 'calendar', ic: '📅', label: '캘린더' },
+  { sec: '업무 관리' },
+  { id: 'todo', ic: '🗂️', label: '업무 보드', badgeKey: 'myTaskOpen' },
   { sec: '데이터' },
   { id: 'employees', ic: '👥', label: '재직자 현황' },
   { id: 'activity', ic: '🕑', label: '활동 기록' },
@@ -182,7 +186,7 @@ async function render() {
 
   const view = $('#view');
   ({ dashboard: viewDashboard, onboarding: viewOnboarding, offboarding: viewOffboarding,
-     calendar: viewCalendar, employees: viewEmployees, activity: viewActivity, users: viewUsers }[state.route] || viewDashboard)(view);
+     calendar: viewCalendar, todo: viewTodo, employees: viewEmployees, activity: viewActivity, users: viewUsers }[state.route] || viewDashboard)(view);
 
   refreshBadges();
 }
@@ -696,13 +700,19 @@ async function listView(view, kind) {
 
 /* ============ 캘린더 ============ */
 let calRef = new Date(); calRef.setDate(1);
+let calMine = false;
 async function viewCalendar(view) {
   view.innerHTML = topbar('캘린더');
   wireTopbar(view);
   const body = document.createElement('div'); view.appendChild(body);
-  const events = await api('GET', '/calendar');
-  const byDate = {};
-  for (const e of events) (byDate[e.date] ||= []).push(e);
+  let byDate = {};
+
+  async function load() {
+    const events = await api('GET', '/calendar' + (calMine ? '?mine=1' : ''));
+    byDate = {};
+    for (const e of events) (byDate[e.date] ||= []).push(e);
+  }
+  await load();
 
   function draw() {
     const y = calRef.getFullYear(), m = calRef.getMonth();
@@ -720,8 +730,12 @@ async function viewCalendar(view) {
           <h3>${y}년 ${m + 1}월</h3>
           <button class="icon-btn" id="nextM">›</button>
           <button class="btn btn-sm" id="todayBtn">오늘</button>
+          <label class="chk-inline"><input type="checkbox" id="calMine" ${calMine ? 'checked' : ''}> 내 업무만</label>
           <div class="spacer"></div>
-          <div class="legend"><span><span class="dot in"></span>입사예정</span><span><span class="dot out"></span>퇴사예정</span><span><span class="dot eval"></span>평가예정</span></div>
+          <div class="legend">
+            <span><span class="dot in"></span>입사예정</span><span><span class="dot out"></span>퇴사예정</span>
+            <span><span class="dot eval"></span>평가예정</span><span><span class="dot task"></span>업무 목표일</span>
+          </div>
         </div>
         <div class="cal-grid">
           ${['일', '월', '화', '수', '목', '금', '토'].map(d => `<div class="cal-dow">${d}</div>`).join('')}
@@ -730,9 +744,16 @@ async function viewCalendar(view) {
             const evs = byDate[ds] || [];
             return `<div class="cal-cell ${c.dim ? 'dim' : ''} ${ds === tk ? 'today' : ''}">
               <span class="dnum">${c.date.getDate()}</span>
-              ${evs.map(ev => `<div class="cal-ev ${ev.type === 'onboarding' ? 'in' : ev.type === 'offboarding' ? 'out' : 'eval'} ${ev.state === '완료' ? 'done-state' : ''}"
-                  data-type="${ev.type}" data-id="${ev.id}" title="${esc(ev.title)} (${esc(ev.category)})">
-                  ${ev.type === 'onboarding' ? '▸' : ev.type === 'offboarding' ? '◂' : '★'} ${esc(ev.title)}</div>`).join('')}
+              ${evs.map(ev => {
+                const cls = ev.type === 'onboarding' ? 'in' : ev.type === 'offboarding' ? 'out'
+                  : ev.type === 'eval' ? 'eval' : 'task';
+                const ic = ev.type === 'onboarding' ? '▸' : ev.type === 'offboarding' ? '◂'
+                  : ev.type === 'eval' ? '★' : (ev.type === 'project' ? '◆' : '●');
+                const who = ev.assignee ? ` · ${esc(ev.assignee)}` : '';
+                return `<div class="cal-ev ${cls} ${ev.state === '완료' ? 'done-state' : ''}"
+                  data-type="${ev.type}" data-id="${ev.id}" title="${esc(ev.title)} (${esc(ev.category)})${who}">
+                  ${ic} ${esc(ev.title)}</div>`;
+              }).join('')}
             </div>`;
           }).join('')}
         </div>
@@ -740,12 +761,371 @@ async function viewCalendar(view) {
     $('#prevM', body).addEventListener('click', () => { calRef.setMonth(calRef.getMonth() - 1); draw(); });
     $('#nextM', body).addEventListener('click', () => { calRef.setMonth(calRef.getMonth() + 1); draw(); });
     $('#todayBtn', body).addEventListener('click', () => { calRef = new Date(); calRef.setDate(1); draw(); });
+    $('#calMine', body).addEventListener('change', async e => { calMine = e.target.checked; await load(); draw(); });
     body.querySelector('.cal-grid').addEventListener('click', e => {
       const ev = e.target.closest('[data-type]'); if (!ev) return;
-      (ev.dataset.type === 'offboarding' ? openOffboarding : openOnboarding)(Number(ev.dataset.id));
+      const t = ev.dataset.type, id = Number(ev.dataset.id);
+      if (t === 'offboarding') openOffboarding(id);
+      else if (t === 'onboarding' || t === 'eval') openOnboarding(id);
+      else if (t === 'task') openTaskModal(id);
+      else if (t === 'project') openProjectModal(id);
     });
   }
   draw();
+}
+
+/* ============ 업무 보드 (To-Do) ============ */
+let _usersCache = null;
+async function getUsers(force) { if (force || !_usersCache) _usersCache = await api('GET', '/users'); return _usersCache; }
+
+// 모달/렌더에서 공유하는 캐시
+let todoProjects = [], todoUsers = [];
+
+const TODO = { view: 'list', status: '진행중', category: '', assignee: '', mine: false, groupBy: 'status' };
+
+// 공통 표기 헬퍼
+const statusPill = (s) => `<span class="pill ${TODO_STATUS_TONE[s] || 'na'}">${esc(s)}</span>`;
+const prioBadge = (p) => `<span class="prio prio-${PRIORITY_TONE[p] || 'mid'}">${esc(p)}</span>`;
+const catBadge = (c) => `<span class="pill cat cat-${{ '인사': 'a', '총무': 'b', '기획': 'c', '기타': 'd' }[c] || 'd'}">${esc(c)}</span>`;
+const schedText = (r) => { const a = r.start_date || '', b = r.target_date || ''; return a && b ? `${a} ~ ${b}` : (a || b || '—'); };
+
+function userOpts(selId) {
+  return `<option value="">미지정</option>` + todoUsers.map(u =>
+    `<option value="${u.id}" ${String(selId) === String(u.id) ? 'selected' : ''}>${esc(u.name)}</option>`).join('');
+}
+function subcatOpts(sel) {
+  return `<option value="">구분 선택</option>` + Object.entries(TASK_SUBCATEGORIES).map(([g, subs]) =>
+    `<optgroup label="${g}">${subs.map(s => `<option ${sel === s ? 'selected' : ''}>${esc(s)}</option>`).join('')}</optgroup>`).join('');
+}
+function projectOpts(sel) {
+  return `<option value="">(프로젝트 미연결)</option>` + todoProjects.map(p =>
+    `<option value="${p.id}" ${String(sel) === String(p.id) ? 'selected' : ''}>${esc(p.title)}</option>`).join('');
+}
+
+async function viewTodo(view) {
+  view.innerHTML = topbar('업무 보드',
+    `<button class="btn" id="addProj">＋ 프로젝트</button><button class="btn btn-primary" id="addTask">＋ 업무</button>`);
+  wireTopbar(view);
+  const wrap = document.createElement('div'); view.appendChild(wrap);
+
+  let projects = [], tasks = [];
+  async function load() {
+    [projects, tasks, todoUsers] = await Promise.all([
+      api('GET', '/projects'), api('GET', '/tasks'), getUsers(true),
+    ]);
+    todoProjects = projects;
+  }
+
+  const taskOk = (t) =>
+    (TODO.status === 'all' || t.status === TODO.status) &&
+    (!TODO.category || t.category === TODO.category) &&
+    (!TODO.assignee || String(t.assignee_id) === TODO.assignee) &&
+    (!TODO.mine || t.assignee_id === state.user.id);
+  const projOk = (p) =>
+    (TODO.status === 'all' || p.status === TODO.status) &&
+    (!TODO.category || p.category === TODO.category) &&
+    (!TODO.assignee || String(p.assignee_id) === TODO.assignee) &&
+    (!TODO.mine || p.assignee_id === state.user.id);
+
+  $('#addProj', view).addEventListener('click', () => openProjectModal(null, refresh));
+  $('#addTask', view).addEventListener('click', () => openTaskModal(null, { onSaved: refresh }));
+  async function refresh() { await load(); draw(); }
+
+  function toolbar(vTasks) {
+    return `
+      <div class="toolbar">
+        <div class="seg" id="vSeg">
+          ${[['list', '리스트'], ['kanban', '칸반'], ['rel', '관계도']].map(([v, l]) =>
+            `<button data-v="${v}" class="${TODO.view === v ? 'on' : ''}">${l}</button>`).join('')}
+        </div>
+        <div class="seg" id="stSeg">
+          ${['진행중', '완료', '취소', 'all'].map(s => `<button data-st="${s}" class="${TODO.status === s ? 'on' : ''}">${s === 'all' ? '전체' : s}</button>`).join('')}
+        </div>
+        <select class="select" id="fCat" style="width:auto"><option value="">구분 전체</option>${PROJECT_CATEGORIES.map(c => `<option ${TODO.category === c ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select>
+        <select class="select" id="fAsg" style="width:auto"><option value="">담당 전체</option>${todoUsers.map(u => `<option value="${u.id}" ${TODO.assignee === String(u.id) ? 'selected' : ''}>${esc(u.name)}</option>`).join('')}</select>
+        <label class="chk-inline"><input type="checkbox" id="fMine" ${TODO.mine ? 'checked' : ''}> 내 업무만</label>
+        ${TODO.view === 'kanban' ? `<div class="seg" id="gbSeg">${[['status', '상태별'], ['assignee', '담당자별']].map(([g, l]) => `<button data-gb="${g}" class="${TODO.groupBy === g ? 'on' : ''}">${l}</button>`).join('')}</div>` : ''}
+        <div class="spacer"></div><span class="t-muted">업무 ${vTasks.length}건</span>
+      </div>`;
+  }
+
+  function draw() {
+    const vTasks = tasks.filter(taskOk);
+    let bodyHtml = '';
+    if (TODO.view === 'list') bodyHtml = renderList(projects, tasks, projOk, taskOk);
+    else if (TODO.view === 'kanban') bodyHtml = renderKanban(vTasks);
+    else bodyHtml = renderRel(projects, tasks, projOk, taskOk);
+    wrap.innerHTML = toolbar(vTasks) + bodyHtml;
+
+    wrap.querySelector('#vSeg').addEventListener('click', e => { const b = e.target.closest('[data-v]'); if (b) { TODO.view = b.dataset.v; draw(); } });
+    wrap.querySelector('#stSeg').addEventListener('click', e => { const b = e.target.closest('[data-st]'); if (b) { TODO.status = b.dataset.st; draw(); } });
+    $('#fCat', wrap).addEventListener('change', e => { TODO.category = e.target.value; draw(); });
+    $('#fAsg', wrap).addEventListener('change', e => { TODO.assignee = e.target.value; draw(); });
+    $('#fMine', wrap).addEventListener('change', e => { TODO.mine = e.target.checked; draw(); });
+    const gb = wrap.querySelector('#gbSeg'); if (gb) gb.addEventListener('click', e => { const b = e.target.closest('[data-gb]'); if (b) { TODO.groupBy = b.dataset.gb; draw(); } });
+
+    // 공통: 프로젝트/업무 클릭 → 모달
+    wrap.querySelectorAll('[data-proj]').forEach(el => el.addEventListener('click', ev => {
+      if (ev.target.closest('[data-task]')) return; // 내부 업무 클릭은 제외
+      openProjectModal(Number(el.dataset.proj), refresh);
+    }));
+    wrap.querySelectorAll('[data-task]').forEach(el => el.addEventListener('click', ev => { ev.stopPropagation(); openTaskModal(Number(el.dataset.task), { onSaved: refresh }); }));
+    wrap.querySelectorAll('[data-addtask]').forEach(el => el.addEventListener('click', ev => { ev.stopPropagation(); openTaskModal(null, { project_id: el.dataset.addtask, onSaved: refresh }); }));
+
+    if (TODO.view === 'kanban') wireKanbanDnD(wrap, refresh);
+  }
+
+  await load();
+  draw();
+}
+
+// ---- 리스트 뷰 ----
+function renderList(projects, tasks, projOk, taskOk) {
+  const byProj = {}; for (const t of tasks) (byProj[t.project_id ?? 0] ||= []).push(t);
+  const blocks = [];
+  for (const p of projects) {
+    const vt = (byProj[p.id] || []).filter(taskOk);
+    if (!projOk(p) && !vt.length) continue;
+    const done = (byProj[p.id] || []).filter(t => t.status === '완료').length;
+    blocks.push(projBlock(p, vt, done, (byProj[p.id] || []).length));
+  }
+  // 프로젝트 미연결 업무
+  const orphans = (byProj[0] || []).filter(taskOk);
+  if (orphans.length) blocks.push(`
+    <div class="proj-block">
+      <div class="proj-head"><div class="proj-title">◇ (프로젝트 미연결 업무)</div></div>
+      <div class="task-rows">${orphans.map(taskRow).join('')}</div>
+    </div>`);
+  return `<div class="todo-list">${blocks.join('') || `<div class="empty"><div class="big">🗂️</div>표시할 업무가 없습니다.</div>`}</div>`;
+}
+function projBlock(p, vt, done, total) {
+  return `
+    <div class="proj-block">
+      <div class="proj-head" data-proj="${p.id}">
+        <div class="proj-title">◆ ${esc(p.title)}</div>
+        ${catBadge(p.category)} ${prioBadge(p.priority)} ${statusPill(p.status)}
+        <span class="t-muted">${p.assignee_name ? esc(p.assignee_name) : '담당 미지정'} · ${esc(schedText(p))}</span>
+        <span class="proj-prog t-muted">하위 ${done}/${total}</span>
+        <div class="spacer"></div>
+        <button class="btn btn-sm" data-addtask="${p.id}">＋ 업무</button>
+      </div>
+      ${vt.length ? `<div class="task-rows">${vt.map(taskRow).join('')}</div>` : `<div class="task-empty t-muted">하위 업무 없음</div>`}
+    </div>`;
+}
+function taskRow(t) {
+  return `
+    <div class="task-row" data-task="${t.id}">
+      <span class="task-name">● ${esc(t.title)}</span>
+      <span class="pill sub">${esc(t.subcategory || t.category)}</span>
+      ${prioBadge(t.priority)} ${statusPill(t.status)}
+      <span class="t-muted asg">${t.assignee_name ? `<span class="udot" style="background:${esc(t.assignee_color || '#888')}"></span>${esc(t.assignee_name)}` : '미지정'}</span>
+      <span class="t-muted">${esc(schedText(t))}</span>
+      ${t.fu_count ? `<span class="fu-chip" title="진행상황 ${t.fu_count}건">💬 ${t.fu_count}</span>` : ''}
+    </div>`;
+}
+
+// ---- 칸반 뷰 ----
+function renderKanban(vTasks) {
+  let cols;
+  if (TODO.groupBy === 'status') {
+    cols = TODO_STATUS.map(s => ({ key: s, label: s, items: vTasks.filter(t => t.status === s) }));
+  } else {
+    cols = todoUsers.map(u => ({ key: String(u.id), label: u.name, color: u.color, items: vTasks.filter(t => t.assignee_id === u.id) }));
+    cols.push({ key: '', label: '미지정', items: vTasks.filter(t => !t.assignee_id) });
+  }
+  return `<div class="kanban">${cols.map(c => `
+    <div class="kb-col">
+      <div class="kb-col-head">${c.color ? `<span class="udot" style="background:${esc(c.color)}"></span>` : ''}${esc(c.label)} <span class="kb-cnt">${c.items.length}</span></div>
+      <div class="kb-col-body" data-col="${esc(c.key)}">
+        ${c.items.map(kbCard).join('') || `<div class="kb-empty">—</div>`}
+      </div>
+    </div>`).join('')}</div>`;
+}
+function kbCard(t) {
+  return `
+    <div class="kb-card prio-l-${PRIORITY_TONE[t.priority] || 'mid'}" draggable="true" data-task="${t.id}" data-id="${t.id}">
+      <div class="kb-card-top">${catBadge(t.category)} ${prioBadge(t.priority)}</div>
+      <div class="kb-card-title">${esc(t.title)}</div>
+      ${t.project_title ? `<div class="kb-card-proj">◆ ${esc(t.project_title)}</div>` : ''}
+      <div class="kb-card-foot">
+        <span class="asg">${t.assignee_name ? `<span class="udot" style="background:${esc(t.assignee_color || '#888')}"></span>${esc(t.assignee_name)}` : '미지정'}</span>
+        ${t.target_date ? `<span class="t-muted">~${esc(t.target_date)}</span>` : ''}
+        ${t.fu_count ? `<span class="fu-chip">💬 ${t.fu_count}</span>` : ''}
+      </div>
+    </div>`;
+}
+function wireKanbanDnD(root, onChange) {
+  root.querySelectorAll('.kb-card').forEach(card => {
+    card.addEventListener('dragstart', e => { e.dataTransfer.setData('text/plain', card.dataset.id); card.classList.add('dragging'); });
+    card.addEventListener('dragend', () => card.classList.remove('dragging'));
+  });
+  root.querySelectorAll('.kb-col-body').forEach(col => {
+    col.addEventListener('dragover', e => { e.preventDefault(); col.classList.add('drop-hover'); });
+    col.addEventListener('dragleave', () => col.classList.remove('drop-hover'));
+    col.addEventListener('drop', async e => {
+      e.preventDefault(); col.classList.remove('drop-hover');
+      const id = Number(e.dataTransfer.getData('text/plain')); if (!id) return;
+      const val = col.dataset.col;
+      const body = TODO.groupBy === 'status' ? { status: val } : { assignee_id: val || null };
+      try { await api('PUT', `/tasks/${id}`, body); await onChange(); } catch (err) { toast(err.message, true); }
+    });
+  });
+}
+
+// ---- 관계도 뷰 ----
+function renderRel(projects, tasks, projOk, taskOk) {
+  const byProj = {}; for (const t of tasks) (byProj[t.project_id ?? 0] ||= []).push(t);
+  const nodes = [];
+  for (const p of projects) {
+    const vt = (byProj[p.id] || []).filter(taskOk);
+    if (!projOk(p) && !vt.length) continue;
+    nodes.push(`
+      <div class="rel-row">
+        <div class="rel-proj" data-proj="${p.id}">
+          <div class="rel-proj-title">◆ ${esc(p.title)}</div>
+          <div class="rel-proj-meta">${catBadge(p.category)} ${statusPill(p.status)}</div>
+          <div class="rel-proj-meta t-muted">${p.assignee_name ? esc(p.assignee_name) : '미지정'}</div>
+        </div>
+        <div class="rel-conn"></div>
+        <div class="rel-tasks">
+          ${vt.length ? vt.map(t => `
+            <div class="rel-task prio-l-${PRIORITY_TONE[t.priority] || 'mid'}" data-task="${t.id}">
+              <span class="task-name">● ${esc(t.title)}</span>
+              <span class="pill sub">${esc(t.subcategory || t.category)}</span>
+              ${statusPill(t.status)}
+              <span class="t-muted">${t.assignee_name ? esc(t.assignee_name) : '미지정'}</span>
+            </div>`).join('') : `<div class="rel-task empty-task t-muted">하위 업무 없음</div>`}
+        </div>
+      </div>`);
+  }
+  const orphans = (byProj[0] || []).filter(taskOk);
+  if (orphans.length) nodes.push(`
+    <div class="rel-row">
+      <div class="rel-proj orphan"><div class="rel-proj-title">◇ 독립 업무</div></div>
+      <div class="rel-conn"></div>
+      <div class="rel-tasks">${orphans.map(t => `
+        <div class="rel-task prio-l-${PRIORITY_TONE[t.priority] || 'mid'}" data-task="${t.id}">
+          <span class="task-name">● ${esc(t.title)}</span>${statusPill(t.status)}
+          <span class="t-muted">${t.assignee_name ? esc(t.assignee_name) : '미지정'}</span>
+        </div>`).join('')}</div>
+    </div>`);
+  return `<div class="rel-board">${nodes.join('') || `<div class="empty"><div class="big">🔗</div>표시할 업무가 없습니다.</div>`}</div>`;
+}
+
+/* ---- 프로젝트 모달 ---- */
+async function openProjectModal(id, onSaved) {
+  await getUsers(); todoUsers = _usersCache;
+  const editing = !!id;
+  const d = editing ? (todoProjects.find(p => p.id === id) || await api('GET', '/projects').then(ps => ps.find(p => p.id === id))) : { status: '진행중', priority: '보통', category: '인사' };
+  openModal(`
+    <div class="modal-head"><h3>프로젝트 ${editing ? '정보' : '등록'}</h3><button class="x" data-x>×</button></div>
+    <div class="modal-body"><form id="projForm" class="form-grid">
+      <div class="field"><label>구분 *</label><select class="select" name="category">${PROJECT_CATEGORIES.map(c => `<option ${d.category === c ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select></div>
+      <div class="field"><label>중요도</label><select class="select" name="priority">${TODO_PRIORITY.map(p => `<option ${d.priority === p ? 'selected' : ''}>${esc(p)}</option>`).join('')}</select></div>
+      <div class="field full"><label>제목 *</label><input class="input" name="title" value="${esc(d.title || '')}" required></div>
+      <div class="field full"><label>내용</label><textarea class="input" name="content" rows="3">${esc(d.content || '')}</textarea></div>
+      <div class="field"><label>상태</label><select class="select" name="status">${TODO_STATUS.map(s => `<option ${d.status === s ? 'selected' : ''}>${esc(s)}</option>`).join('')}</select></div>
+      <div class="field"><label>담당자</label><select class="select" name="assignee_id">${userOpts(d.assignee_id)}</select></div>
+      <div class="field"><label>시작일</label><input class="input" name="start_date" type="date" value="${esc(d.start_date || '')}"></div>
+      <div class="field"><label>목표일</label><input class="input" name="target_date" type="date" value="${esc(d.target_date || '')}"></div>
+      <div class="field"><label>완료일</label><input class="input" name="done_date" type="date" value="${esc(d.done_date || '')}"></div>
+    </form></div>
+    <div class="modal-foot">
+      ${editing ? `<button class="btn btn-danger" id="delProj">삭제</button>` : ''}<div class="spacer"></div>
+      <button class="btn" data-x>취소</button><button class="btn btn-primary" id="saveProj">${editing ? '저장' : '등록'}</button>
+    </div>`);
+  const root = $('#modal-root');
+  root.querySelectorAll('[data-x]').forEach(b => b.addEventListener('click', closeModal));
+  $('#saveProj', root).addEventListener('click', async () => {
+    const body = Object.fromEntries(new FormData($('#projForm', root)).entries());
+    if (!body.title) return toast('제목은 필수입니다', true);
+    try {
+      if (editing) await api('PUT', `/projects/${id}`, body); else await api('POST', '/projects', body);
+      toast('저장되었습니다'); closeModal(); onSaved && onSaved();
+    } catch (e) { toast(e.message, true); }
+  });
+  if (editing) $('#delProj', root).addEventListener('click', async () => {
+    if (!confirm(`'${d.title}' 프로젝트를 삭제할까요?\n연결된 하위 업무와 진행상황도 함께 삭제됩니다.`)) return;
+    try { await api('DELETE', `/projects/${id}`); toast('삭제되었습니다'); closeModal(); onSaved && onSaved(); } catch (e) { toast(e.message, true); }
+  });
+}
+
+/* ---- 업무(하위업무) 모달 ---- */
+async function openTaskModal(id, opts = {}) {
+  await getUsers(); todoUsers = _usersCache;
+  if (!todoProjects.length) todoProjects = await api('GET', '/projects');
+  const editing = !!id;
+  let d;
+  if (editing) {
+    d = await api('GET', '/tasks').then(ts => ts.find(t => t.id === id));
+    if (!d) return toast('업무를 찾을 수 없습니다', true);
+  } else {
+    d = { status: '진행중', priority: '보통', project_id: opts.project_id ? Number(opts.project_id) : '' };
+  }
+  openModal(`
+    <div class="modal-head"><h3>업무 ${editing ? '정보' : '등록'}</h3><button class="x" data-x>×</button></div>
+    <div class="modal-body">
+      <form id="taskForm" class="form-grid">
+        <div class="field"><label>프로젝트</label><select class="select" name="project_id">${projectOpts(d.project_id)}</select></div>
+        <div class="field"><label>구분 *</label><select class="select" name="subcategory">${subcatOpts(d.subcategory)}</select></div>
+        <div class="field"><label>중요도</label><select class="select" name="priority">${TODO_PRIORITY.map(p => `<option ${d.priority === p ? 'selected' : ''}>${esc(p)}</option>`).join('')}</select></div>
+        <div class="field"><label>상태</label><select class="select" name="status">${TODO_STATUS.map(s => `<option ${d.status === s ? 'selected' : ''}>${esc(s)}</option>`).join('')}</select></div>
+        <div class="field full"><label>제목 *</label><input class="input" name="title" value="${esc(d.title || '')}" required></div>
+        <div class="field full"><label>내용</label><textarea class="input" name="content" rows="3">${esc(d.content || '')}</textarea></div>
+        <div class="field"><label>담당자</label><select class="select" name="assignee_id">${userOpts(d.assignee_id)}</select></div>
+        <div class="field"><label>시작일</label><input class="input" name="start_date" type="date" value="${esc(d.start_date || '')}"></div>
+        <div class="field"><label>목표일</label><input class="input" name="target_date" type="date" value="${esc(d.target_date || '')}"></div>
+        <div class="field"><label>완료일</label><input class="input" name="done_date" type="date" value="${esc(d.done_date || '')}"></div>
+      </form>
+      ${editing ? `<div class="fu-section"><div class="section-title">진행상황 F/U</div><div id="fuList" class="fu-list"><div class="t-muted">불러오는 중…</div></div>
+        <div class="fu-add"><input class="input" type="date" id="fuDate" style="width:auto"><input class="input" id="fuContent" placeholder="진행 내용 입력"><button class="btn btn-sm btn-primary" id="fuAdd">추가</button></div></div>` : ''}
+    </div>
+    <div class="modal-foot">
+      ${editing ? `<button class="btn btn-danger" id="delTask">삭제</button>` : ''}<div class="spacer"></div>
+      <button class="btn" data-x>취소</button><button class="btn btn-primary" id="saveTask">${editing ? '저장' : '등록'}</button>
+    </div>`, 'lg');
+  const root = $('#modal-root');
+  root.querySelectorAll('[data-x]').forEach(b => b.addEventListener('click', closeModal));
+  $('#saveTask', root).addEventListener('click', async () => {
+    const body = Object.fromEntries(new FormData($('#taskForm', root)).entries());
+    if (!body.title) return toast('제목은 필수입니다', true);
+    if (!body.subcategory) return toast('구분을 선택하세요', true);
+    try {
+      if (editing) await api('PUT', `/tasks/${id}`, body); else await api('POST', '/tasks', body);
+      toast('저장되었습니다'); closeModal(); opts.onSaved && opts.onSaved();
+    } catch (e) { toast(e.message, true); }
+  });
+  if (editing) {
+    $('#delTask', root).addEventListener('click', async () => {
+      if (!confirm(`'${d.title}' 업무를 삭제할까요?`)) return;
+      try { await api('DELETE', `/tasks/${id}`); toast('삭제되었습니다'); closeModal(); opts.onSaved && opts.onSaved(); } catch (e) { toast(e.message, true); }
+    });
+    await loadFollowups(id, root);
+    $('#fuAdd', root).addEventListener('click', async () => {
+      const content = $('#fuContent', root).value.trim();
+      if (!content) return toast('진행 내용을 입력하세요', true);
+      try {
+        await api('POST', `/tasks/${id}/followups`, { fu_date: $('#fuDate', root).value, content });
+        $('#fuContent', root).value = '';
+        await loadFollowups(id, root);
+        opts.onSaved && opts.onSaved();   // FU 건수 갱신
+      } catch (e) { toast(e.message, true); }
+    });
+  }
+}
+async function loadFollowups(taskId, root) {
+  const list = $('#fuList', root); if (!list) return;
+  const rows = await api('GET', `/tasks/${taskId}/followups`);
+  list.innerHTML = rows.length ? rows.map(f => `
+    <div class="fu-item">
+      <span class="fu-date">${esc(f.fu_date || '—')}</span>
+      <span class="fu-text">${esc(f.content)}</span>
+      <span class="fu-author t-muted">${esc(f.author || '')}</span>
+      <button class="fu-del" data-fu="${f.id}" title="삭제">×</button>
+    </div>`).join('') : `<div class="t-muted">등록된 진행상황이 없습니다.</div>`;
+  list.querySelectorAll('[data-fu]').forEach(b => b.addEventListener('click', async () => {
+    try { await api('DELETE', `/followups/${b.dataset.fu}`); await loadFollowups(taskId, root); } catch (e) { toast(e.message, true); }
+  }));
 }
 
 /* ============ 재직자 현황 ============ */

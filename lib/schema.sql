@@ -92,3 +92,51 @@ CREATE TABLE IF NOT EXISTS activity_log (
   detail      text,
   created_at  timestamptz NOT NULL DEFAULT now()
 );
+
+-- ===== 업무 To-Do (프로젝트 / 하위업무 / 진행 F/U) =====
+CREATE TABLE IF NOT EXISTS projects (
+  id          bigserial PRIMARY KEY,
+  category    text NOT NULL,                 -- 인사/총무/기획/기타
+  priority    text NOT NULL DEFAULT '보통',  -- 초비상/우선/보통/여유
+  title       text NOT NULL,
+  content     text,
+  start_date  text,
+  target_date text,
+  done_date   text,
+  status      text NOT NULL DEFAULT '진행중',-- 진행중/완료/취소
+  assignee_id bigint REFERENCES users(id) ON DELETE SET NULL,
+  created_by  bigint REFERENCES users(id),
+  created_at  timestamptz NOT NULL DEFAULT now(),
+  updated_at  timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_proj_status ON projects(status);
+
+CREATE TABLE IF NOT EXISTS tasks (
+  id          bigserial PRIMARY KEY,
+  project_id  bigint REFERENCES projects(id) ON DELETE CASCADE,
+  category    text NOT NULL,                 -- 상위 구분(인사/총무/기획/기타)
+  subcategory text,                          -- 하위 구분2(급여/연차/...)
+  priority    text NOT NULL DEFAULT '보통',
+  title       text NOT NULL,
+  content     text,
+  start_date  text,
+  target_date text,
+  done_date   text,
+  status      text NOT NULL DEFAULT '진행중',
+  assignee_id bigint REFERENCES users(id) ON DELETE SET NULL,
+  created_by  bigint REFERENCES users(id),
+  created_at  timestamptz NOT NULL DEFAULT now(),
+  updated_at  timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_tasks_project ON tasks(project_id);
+CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
+
+CREATE TABLE IF NOT EXISTS task_followups (
+  id         bigserial PRIMARY KEY,
+  task_id    bigint NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+  fu_date    text,
+  content    text NOT NULL,
+  created_by bigint REFERENCES users(id),
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_fu_task ON task_followups(task_id);

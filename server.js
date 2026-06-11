@@ -10,6 +10,7 @@ import {
 import {
   ONBOARDING_TASKS, OFFBOARDING_TASKS, activeTasks, computeDate,
   deriveState, effectiveTasks,
+  TODO_STATUS, TODO_PRIORITY, PROJECT_CATEGORIES, TASK_SUBCATEGORIES,
 } from './public/js/config.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -460,6 +461,30 @@ app.get('/api/calendar', requireAuth, wrap(async (req, res) => {
     if (to && o.leave_date > to) continue;
     events.push({ type: 'offboarding', id: o.id, date: o.leave_date, title: o.name, category: o.category, state: o.state });
   }
+
+  // 업무(프로젝트/하위업무) 목표일 — 취소 제외, mine=1이면 본인 담당만
+  const mine = req.query.mine === '1';
+  const mineP = mine ? [req.user.id] : [];
+  const mineSqlP = mine ? `AND p.assignee_id = ?` : '';
+  const projs = await q(
+    `SELECT p.id, p.title, p.target_date, p.category, p.status, p.assignee_id, u.name AS assignee, u.color AS assignee_color
+       FROM projects p LEFT JOIN users u ON u.id = p.assignee_id
+      WHERE p.target_date <> '' AND p.status <> '취소' ${mineSqlP}`, mineP);
+  for (const p of projs) {
+    if (from && p.target_date < from) continue;
+    if (to && p.target_date > to) continue;
+    events.push({ type: 'project', id: p.id, date: p.target_date, title: p.title, category: p.category, state: p.status, assignee: p.assignee, assignee_color: p.assignee_color });
+  }
+  const mineSqlT = mine ? `AND t.assignee_id = ?` : '';
+  const tks = await q(
+    `SELECT t.id, t.project_id, t.title, t.target_date, t.category, t.status, t.assignee_id, u.name AS assignee, u.color AS assignee_color
+       FROM tasks t LEFT JOIN users u ON u.id = t.assignee_id
+      WHERE t.target_date <> '' AND t.status <> '취소' ${mineSqlT}`, mineP);
+  for (const t of tks) {
+    if (from && t.target_date < from) continue;
+    if (to && t.target_date > to) continue;
+    events.push({ type: 'task', id: t.id, project_id: t.project_id, date: t.target_date, title: t.title, category: t.category, state: t.status, assignee: t.assignee, assignee_color: t.assignee_color });
+  }
   res.json(events);
 }));
 
@@ -467,18 +492,187 @@ app.get('/api/calendar', requireAuth, wrap(async (req, res) => {
 app.get('/api/dashboard', requireAuth, wrap(async (req, res) => {
   bg(autoCompleteDueOnboarding(req.user));
   const cnt = async (sql, p = []) => (await one(sql, p)).c;
-  const [empActive, empLeave, onbOpen, ofbOpen] = await Promise.all([
+  const [empActive, empLeave, onbOpen, ofbOpen, taskOpen, myTaskOpen] = await Promise.all([
     cnt(`SELECT COUNT(*)::int c FROM employees WHERE status='재직'`),
     cnt(`SELECT COUNT(*)::int c FROM employees WHERE status='휴직'`),
     cnt(`SELECT COUNT(*)::int c FROM onboarding WHERE state='진행중'`),
     cnt(`SELECT COUNT(*)::int c FROM offboarding WHERE state='진행중'`),
+    cnt(`SELECT COUNT(*)::int c FROM tasks WHERE status='진행중'`),
+    cnt(`SELECT COUNT(*)::int c FROM tasks WHERE status='진행중' AND assignee_id = ?`, [req.user.id]),
   ]);
-  res.json({ empActive, empLeave, onbOpen, ofbOpen });
+  res.json({ empActive, empLeave, onbOpen, ofbOpen, taskOpen, myTaskOpen });
 }));
 
 app.get('/api/activity', requireAuth, wrap(async (req, res) => {
   const limit = Math.min(Number(req.query.limit) || 50, 200);
   res.json(await q('SELECT * FROM activity_log ORDER BY id DESC LIMIT ?', [limit]));
+}));
+
+/* ---------------- 업무 To-Do (프로젝트 / 하위업무 / F/U) ---------------- */
+const STATUS_SET = new Set(TODO_STATUS);
+const PRIORITY_SET = new Set(TODO_PRIORITY);
+const PROJ_CAT_SET = new Set(PROJECT_CATEGORIES);
+const ALL_SUBCATS = new Set(Object.values(TASK_SUBCATEGORIES).flat());
+// 하위 구분2 → 상위 구분 역매핑
+const SUBCAT_GROUP = {};
+for (const [g, subs] of Object.entries(TASK_SUBCATEGORIES)) for (const s of subs) SUBCAT_GROUP[s] = g;
+
+function validTodo({ status, priority }) {
+  if (status && !STATUS_SET.has(status)) return '상태 값이 올바르지 않습니다.';
+  if (priority && !PRIORITY_SET.has(priority)) return '중요도 값이 올바르지 않습니다.';
+  return null;
+}
+const normAssignee = (v) => (v === undefined || v === null || v === '' ? null : Number(v));
+
+/* --- Projects --- */
+app.get('/api/projects', requireAuth, wrap(async (req, res) => {
+  const { status, category } = req.query;
+  const mine = req.query.mine === '1';
+  const where = [], params = [];
+  if (status) { where.push('p.status = ?'); params.push(status); }
+  if (category) { where.push('p.category = ?'); params.push(category); }
+  if (mine) { where.push('p.assignee_id = ?'); params.push(req.user.id); }
+  const rows = await q(`
+    SELECT p.*, u.name AS assignee_name, u.color AS assignee_color
+      FROM projects p LEFT JOIN users u ON u.id = p.assignee_id
+      ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
+      ORDER BY p.id DESC`, params);
+  // 하위업무 건수/완료 집계 병합 (scalar 서브쿼리 회피 — pg-mem 호환)
+  const counts = await q(`SELECT project_id, COUNT(*)::int AS total,
+                                 SUM(CASE WHEN status='완료' THEN 1 ELSE 0 END)::int AS done
+                            FROM tasks WHERE project_id IS NOT NULL GROUP BY project_id`);
+  const cmap = {}; for (const c of counts) cmap[c.project_id] = c;
+  for (const r of rows) { r.task_count = cmap[r.id]?.total || 0; r.task_done = cmap[r.id]?.done || 0; }
+  res.json(rows);
+}));
+
+const PROJ_FIELDS = ['category', 'priority', 'title', 'content', 'start_date', 'target_date', 'done_date', 'status', 'assignee_id'];
+app.post('/api/projects', requireAuth, wrap(async (req, res) => {
+  const b = req.body || {};
+  if (!b.title || !b.category) return res.status(400).json({ error: '제목·구분은 필수입니다.' });
+  if (!PROJ_CAT_SET.has(b.category)) return res.status(400).json({ error: '프로젝트 구분 값이 올바르지 않습니다.' });
+  const err = validTodo(b); if (err) return res.status(400).json({ error: err });
+  const vals = PROJ_FIELDS.map(f => f === 'assignee_id' ? normAssignee(b.assignee_id)
+    : (b[f] ?? (f === 'status' ? '진행중' : f === 'priority' ? '보통' : '')));
+  const ph = PROJ_FIELDS.map(() => '?').join(',');
+  const row = await one(`INSERT INTO projects (${PROJ_FIELDS.join(',')}, created_by) VALUES (${ph}, ?) RETURNING *`, [...vals, req.user.id]);
+  await logActivity({ userId: req.user.id, userName: req.user.name, action: '프로젝트 등록', targetType: 'project', targetId: row.id, detail: b.title });
+  res.json(row);
+}));
+
+app.put('/api/projects/:id', requireAuth, wrap(async (req, res) => {
+  const id = Number(req.params.id);
+  const b = req.body || {};
+  const cur = await one('SELECT * FROM projects WHERE id = ?', [id]);
+  if (!cur) return res.status(404).json({ error: '없음' });
+  if (b.category && !PROJ_CAT_SET.has(b.category)) return res.status(400).json({ error: '프로젝트 구분 값이 올바르지 않습니다.' });
+  const err = validTodo(b); if (err) return res.status(400).json({ error: err });
+  const next = {};
+  for (const f of PROJ_FIELDS) next[f] = f in b ? (f === 'assignee_id' ? normAssignee(b.assignee_id) : b[f]) : cur[f];
+  await run(`UPDATE projects SET ${PROJ_FIELDS.map(f => `${f}=?`).join(',')}, updated_at=now() WHERE id=?`,
+    [...PROJ_FIELDS.map(f => next[f]), id]);
+  await logActivity({ userId: req.user.id, userName: req.user.name, action: '프로젝트 수정', targetType: 'project', targetId: id, detail: next.title });
+  res.json({ ok: true });
+}));
+
+app.delete('/api/projects/:id', requireAuth, wrap(async (req, res) => {
+  const id = Number(req.params.id);
+  const row = await one('SELECT title FROM projects WHERE id = ?', [id]);
+  await run('DELETE FROM projects WHERE id = ?', [id]);  // tasks/FU는 CASCADE
+  await logActivity({ userId: req.user.id, userName: req.user.name, action: '프로젝트 삭제', targetType: 'project', targetId: id, detail: row?.title });
+  res.json({ ok: true });
+}));
+
+/* --- Tasks (하위업무) --- */
+app.get('/api/tasks', requireAuth, wrap(async (req, res) => {
+  const { status, category, project_id } = req.query;
+  const mine = req.query.mine === '1';
+  const where = [], params = [];
+  if (status) { where.push('t.status = ?'); params.push(status); }
+  if (category) { where.push('t.category = ?'); params.push(category); }
+  if (project_id) { where.push('t.project_id = ?'); params.push(Number(project_id)); }
+  if (mine) { where.push('t.assignee_id = ?'); params.push(req.user.id); }
+  const rows = await q(`
+    SELECT t.*, u.name AS assignee_name, u.color AS assignee_color, p.title AS project_title
+      FROM tasks t
+      LEFT JOIN users u ON u.id = t.assignee_id
+      LEFT JOIN projects p ON p.id = t.project_id
+      ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
+      ORDER BY t.id DESC`, params);
+  // F/U 건수 집계 병합
+  const counts = await q(`SELECT task_id, COUNT(*)::int AS c FROM task_followups GROUP BY task_id`);
+  const cmap = {}; for (const c of counts) cmap[c.task_id] = c.c;
+  for (const r of rows) r.fu_count = cmap[r.id] || 0;
+  res.json(rows);
+}));
+
+const TASK_FIELDS = ['project_id', 'category', 'subcategory', 'priority', 'title', 'content', 'start_date', 'target_date', 'done_date', 'status', 'assignee_id'];
+app.post('/api/tasks', requireAuth, wrap(async (req, res) => {
+  const b = req.body || {};
+  if (!b.title || !b.subcategory) return res.status(400).json({ error: '제목·구분은 필수입니다.' });
+  if (!ALL_SUBCATS.has(b.subcategory)) return res.status(400).json({ error: '업무 구분 값이 올바르지 않습니다.' });
+  const err = validTodo(b); if (err) return res.status(400).json({ error: err });
+  b.category = SUBCAT_GROUP[b.subcategory];   // 상위 구분 자동 결정
+  const vals = TASK_FIELDS.map(f => f === 'assignee_id' ? normAssignee(b.assignee_id)
+    : f === 'project_id' ? (b.project_id ? Number(b.project_id) : null)
+    : (b[f] ?? (f === 'status' ? '진행중' : f === 'priority' ? '보통' : '')));
+  const ph = TASK_FIELDS.map(() => '?').join(',');
+  const row = await one(`INSERT INTO tasks (${TASK_FIELDS.join(',')}, created_by) VALUES (${ph}, ?) RETURNING *`, [...vals, req.user.id]);
+  await logActivity({ userId: req.user.id, userName: req.user.name, action: '업무 등록', targetType: 'task', targetId: row.id, detail: b.title });
+  res.json(row);
+}));
+
+app.put('/api/tasks/:id', requireAuth, wrap(async (req, res) => {
+  const id = Number(req.params.id);
+  const b = req.body || {};
+  const cur = await one('SELECT * FROM tasks WHERE id = ?', [id]);
+  if (!cur) return res.status(404).json({ error: '없음' });
+  if (b.subcategory && !ALL_SUBCATS.has(b.subcategory)) return res.status(400).json({ error: '업무 구분 값이 올바르지 않습니다.' });
+  const err = validTodo(b); if (err) return res.status(400).json({ error: err });
+  if (b.subcategory) b.category = SUBCAT_GROUP[b.subcategory];
+  const next = {};
+  for (const f of TASK_FIELDS) next[f] = f in b
+    ? (f === 'assignee_id' ? normAssignee(b.assignee_id) : f === 'project_id' ? (b.project_id ? Number(b.project_id) : null) : b[f])
+    : cur[f];
+  await run(`UPDATE tasks SET ${TASK_FIELDS.map(f => `${f}=?`).join(',')}, updated_at=now() WHERE id=?`,
+    [...TASK_FIELDS.map(f => next[f]), id]);
+  await logActivity({ userId: req.user.id, userName: req.user.name, action: '업무 수정', targetType: 'task', targetId: id, detail: next.title });
+  res.json({ ok: true });
+}));
+
+app.delete('/api/tasks/:id', requireAuth, wrap(async (req, res) => {
+  const id = Number(req.params.id);
+  const row = await one('SELECT title FROM tasks WHERE id = ?', [id]);
+  await run('DELETE FROM tasks WHERE id = ?', [id]);
+  await logActivity({ userId: req.user.id, userName: req.user.name, action: '업무 삭제', targetType: 'task', targetId: id, detail: row?.title });
+  res.json({ ok: true });
+}));
+
+/* --- Task Follow-ups (진행상황) --- */
+app.get('/api/tasks/:id/followups', requireAuth, wrap(async (req, res) => {
+  const id = Number(req.params.id);
+  res.json(await q(
+    `SELECT f.*, u.name AS author FROM task_followups f LEFT JOIN users u ON u.id = f.created_by
+      WHERE f.task_id = ? ORDER BY f.fu_date, f.id`, [id]));
+}));
+
+app.post('/api/tasks/:id/followups', requireAuth, wrap(async (req, res) => {
+  const id = Number(req.params.id);
+  const b = req.body || {};
+  if (!b.content) return res.status(400).json({ error: '진행 내용은 필수입니다.' });
+  const task = await one('SELECT id FROM tasks WHERE id = ?', [id]);
+  if (!task) return res.status(404).json({ error: '업무 없음' });
+  const row = await one(
+    `INSERT INTO task_followups (task_id, fu_date, content, created_by) VALUES (?, ?, ?, ?) RETURNING *`,
+    [id, b.fu_date || '', b.content, req.user.id]);
+  await logActivity({ userId: req.user.id, userName: req.user.name, action: '진행상황 등록', targetType: 'task', targetId: id, detail: b.content.slice(0, 50) });
+  res.json(row);
+}));
+
+app.delete('/api/followups/:id', requireAuth, wrap(async (req, res) => {
+  const id = Number(req.params.id);
+  await run('DELETE FROM task_followups WHERE id = ?', [id]);
+  res.json({ ok: true });
 }));
 
 /* ---------------- Static ---------------- */
