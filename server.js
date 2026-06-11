@@ -56,6 +56,37 @@ function clearSessionCookie(res) {
 // async 핸들러 래퍼
 const wrap = (fn) => (req, res, next) => Promise.resolve(fn(req, res)).catch(next);
 
+// KST 기준 오늘 날짜 ('YYYY-MM-DD')
+function kstTodayStr() {
+  return new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 10);
+}
+
+// 입사자 1건을 재직자 현황에 반영(입사 확정과 동일 로직) — 수동 확정/자동 확정 공용
+async function applyOnboardingComplete(o) {
+  let empId = o.employee_id;
+  if (empId) {
+    await run(`UPDATE employees SET status='재직', emp_no=?, name=?, position=?, field=?, join_date=?, org=?, updated_at=now() WHERE id=?`,
+      [o.emp_no, o.name, o.position, o.field, o.join_date, o.org, empId]);
+  } else {
+    const row = await one(
+      `INSERT INTO employees (emp_no, name, position, status, field, join_date, org) VALUES (?, ?, ?, '재직', ?, ?, ?) RETURNING id`,
+      [o.emp_no, o.name, o.position, o.field, o.join_date, o.org]);
+    empId = row.id;
+  }
+  await run(`UPDATE onboarding SET state='완료', employee_id=?, updated_at=now() WHERE id=?`, [empId, o.id]);
+  return empId;
+}
+
+// 입사일이 도래한 '진행중' 입사자를 자동으로 재직자 현황에 반영
+async function autoCompleteDueOnboarding(actor) {
+  const today = kstTodayStr();
+  const due = await q(`SELECT * FROM onboarding WHERE state='진행중' AND join_date <> '' AND join_date <= ?`, [today]);
+  for (const o of due) {
+    await applyOnboardingComplete(o);
+    await logActivity({ userId: actor?.id, userName: actor?.name, action: '입사일 도래 → 자동 재직자 반영', targetType: 'onboarding', targetId: o.id, detail: o.name });
+  }
+}
+
 /* ---------------- Auth ---------------- */
 app.post('/api/auth/login', wrap(async (req, res) => {
   const { username, password } = req.body || {};
@@ -115,6 +146,7 @@ app.get('/api/employees/meta', requireAuth, wrap(async (req, res) => {
 }));
 
 app.get('/api/employees', requireAuth, wrap(async (req, res) => {
+  await autoCompleteDueOnboarding(req.user);
   const { status, q: term, field, org } = req.query;
   const where = [], params = [];
   if (status) { where.push('status = ?'); params.push(status); }
@@ -167,6 +199,7 @@ const ONB_FIELDS = ['emp_no', 'name', 'category', 'position', 'org', 'field', 'j
 const tasksVal = (b) => JSON.stringify(b.tasks || {});
 
 app.get('/api/onboarding', requireAuth, wrap(async (req, res) => {
+  await autoCompleteDueOnboarding(req.user);
   const { state } = req.query;
   const sql = `SELECT * FROM onboarding ${state ? 'WHERE state = ?' : ''} ORDER BY join_date DESC, id DESC`;
   res.json(await q(sql, state ? [state] : []));
@@ -203,17 +236,7 @@ app.post('/api/onboarding/:id/complete', requireAuth, wrap(async (req, res) => {
   const id = Number(req.params.id);
   const o = await one('SELECT * FROM onboarding WHERE id = ?', [id]);
   if (!o) return res.status(404).json({ error: '없음' });
-  let empId = o.employee_id;
-  if (empId) {
-    await run(`UPDATE employees SET status='재직', emp_no=?, name=?, position=?, field=?, join_date=?, org=?, updated_at=now() WHERE id=?`,
-      [o.emp_no, o.name, o.position, o.field, o.join_date, o.org, empId]);
-  } else {
-    const row = await one(
-      `INSERT INTO employees (emp_no, name, position, status, field, join_date, org) VALUES (?, ?, ?, '재직', ?, ?, ?) RETURNING id`,
-      [o.emp_no, o.name, o.position, o.field, o.join_date, o.org]);
-    empId = row.id;
-  }
-  await run(`UPDATE onboarding SET state='완료', employee_id=?, updated_at=now() WHERE id=?`, [empId, id]);
+  const empId = await applyOnboardingComplete(o);
   await logActivity({ userId: req.user.id, userName: req.user.name, action: '입사 확정→재직자 반영', targetType: 'onboarding', targetId: id, detail: o.name });
   res.json({ ok: true, employee_id: empId });
 }));
@@ -244,6 +267,7 @@ app.get('/api/offboarding/:id', requireAuth, wrap(async (req, res) => {
 app.post('/api/offboarding', requireAuth, wrap(async (req, res) => {
   const b = req.body || {};
   if (!b.name || !b.category || !b.leave_date) return res.status(400).json({ error: '성명·구분·퇴사예정일은 필수입니다.' });
+  if ('employee_id' in b) b.employee_id = b.employee_id ? Number(b.employee_id) : null;
   const vals = OFB_FIELDS.map(f => f === 'tasks' ? tasksVal(b) : (b[f] ?? (f === 'state' ? '진행중' : (f === 'employee_id' ? null : ''))));
   const ph = OFB_FIELDS.map(() => '?').join(',');
   const row = await one(`INSERT INTO offboarding (${OFB_FIELDS.join(',')}, created_by) VALUES (${ph}, ?) RETURNING *`, [...vals, req.user.id]);
@@ -254,6 +278,7 @@ app.post('/api/offboarding', requireAuth, wrap(async (req, res) => {
 app.put('/api/offboarding/:id', requireAuth, wrap(async (req, res) => {
   const id = Number(req.params.id);
   const b = req.body || {};
+  if ('employee_id' in b) b.employee_id = b.employee_id ? Number(b.employee_id) : null;
   const sets = OFB_FIELDS.filter(f => f in b);
   if (!sets.length) return res.status(400).json({ error: '변경 항목 없음' });
   const row = await one(
@@ -286,6 +311,7 @@ app.delete('/api/offboarding/:id', requireAuth, wrap(async (req, res) => {
 
 /* ---------------- Calendar ---------------- */
 app.get('/api/calendar', requireAuth, wrap(async (req, res) => {
+  await autoCompleteDueOnboarding(req.user);
   const { from, to } = req.query;
   const events = [];
   const onb = await q(`SELECT id, name, join_date, category, state FROM onboarding WHERE join_date <> ''`);
@@ -305,6 +331,7 @@ app.get('/api/calendar', requireAuth, wrap(async (req, res) => {
 
 /* ---------------- Dashboard / Activity ---------------- */
 app.get('/api/dashboard', requireAuth, wrap(async (req, res) => {
+  await autoCompleteDueOnboarding(req.user);
   const cnt = async (sql, p = []) => (await one(sql, p)).c;
   res.json({
     empActive: await cnt(`SELECT COUNT(*)::int c FROM employees WHERE status='재직'`),

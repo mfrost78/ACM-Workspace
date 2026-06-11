@@ -246,14 +246,52 @@ function progBar(pct) {
 }
 
 /* ============ 공통: 체크리스트 폼 렌더 ============ */
-function basicInfoFields(kind, d = {}) {
+// 퇴사자 등록: 선택한 재직자 정보(읽기전용 표시 + hidden 입력)
+function empInfoBlock(d = {}) {
+  return `
+    <div class="field"><label>성명</label><div class="static">${esc(d.name) || '—'}</div></div>
+    <div class="field"><label>사번</label><div class="static">${esc(d.emp_no) || '—'}</div></div>
+    <div class="field"><label>직급</label><div class="static">${esc(d.position) || '—'}</div></div>
+    <div class="field"><label>분야</label><div class="static">${esc(d.field) || '—'}</div></div>
+    <div class="field"><label>소속</label><div class="static">${esc(d.org) || '—'}</div></div>
+    <div class="field"><label>입사일</label><div class="static">${esc(d.join_date) || '—'}</div></div>
+    <input type="hidden" name="employee_id" value="${esc(d.employee_id || '')}">
+    <input type="hidden" name="name" value="${esc(d.name || '')}">
+    <input type="hidden" name="emp_no" value="${esc(d.emp_no || '')}">
+    <input type="hidden" name="position" value="${esc(d.position || '')}">
+    <input type="hidden" name="field" value="${esc(d.field || '')}">
+    <input type="hidden" name="org" value="${esc(d.org || '')}">
+    <input type="hidden" name="join_date" value="${esc(d.join_date || '')}">`;
+}
+
+function basicInfoFields(kind, d = {}, empList = []) {
   const posOpts = ['', ...POSITIONS].map(p => `<option ${d.position === p ? 'selected' : ''}>${p}</option>`).join('');
   const fieldOpts = ['', ...FIELDS].map(p => `<option ${d.field === p ? 'selected' : ''}>${p}</option>`).join('');
   const catOpts = CATEGORIES.map(c => `<option ${d.category === c ? 'selected' : ''}>${c}</option>`).join('');
-  const dateExtra = kind === 'off'
-    ? `<div class="field"><label>퇴사예정일 *</label><input class="input" name="leave_date" type="date" value="${esc(d.leave_date || '')}" required></div>
-       <div class="field"><label>사직원 접수일</label><input class="input" name="resign_date" type="date" value="${esc(d.resign_date || '')}"></div>`
-    : `<div class="field"><label>입사일 *</label><input class="input" name="join_date" type="date" value="${esc(d.join_date || '')}" required></div>`;
+
+  if (kind === 'off') {
+    const empPicker = !d.id ? `
+      <div class="field full"><label>재직자 선택 *</label>
+        <select class="select" name="employee_pick" id="empPick" required>
+          <option value="">선택하세요</option>
+          ${empList.map(e => `<option value="${e.id}"
+              data-name="${esc(e.name)}" data-emp_no="${esc(e.emp_no || '')}" data-position="${esc(e.position || '')}"
+              data-field="${esc(e.field || '')}" data-org="${esc(e.org || '')}" data-join_date="${esc(e.join_date || '')}">
+              ${esc(e.name)}${e.emp_no ? ` (${esc(e.emp_no)})` : ''}${e.dept ? ` · ${esc(e.dept)}` : ''}
+            </option>`).join('')}
+        </select>
+      </div>` : '';
+    return `
+    <div class="form-grid">
+      <div class="field"><label>구분 *</label><select class="select" name="category" required>${catOpts}</select></div>
+      ${empPicker}
+      <div id="empInfo" class="contents">${empInfoBlock(d)}</div>
+      <div class="field"><label>퇴사예정일 *</label><input class="input" name="leave_date" type="date" value="${esc(d.leave_date || '')}" required></div>
+      <div class="field"><label>사직원 접수일</label><input class="input" name="resign_date" type="date" value="${esc(d.resign_date || '')}"></div>
+      <div class="field full"><label>퇴직사유</label><input class="input" name="resign_reason" value="${esc(d.resign_reason || '')}" placeholder="자유 기재"></div>
+    </div>`;
+  }
+
   return `
     <div class="form-grid">
       <div class="field"><label>구분 *</label><select class="select" name="category" required>${catOpts}</select></div>
@@ -262,9 +300,7 @@ function basicInfoFields(kind, d = {}) {
       <div class="field"><label>직급</label><select class="select" name="position">${posOpts}</select></div>
       <div class="field"><label>분야</label><select class="select" name="field">${fieldOpts}</select></div>
       <div class="field"><label>소속</label><input class="input" name="org" value="${esc(d.org || '')}"></div>
-      ${kind === 'off' ? `<div class="field"><label>입사일</label><input class="input" name="join_date" type="date" value="${esc(d.join_date || '')}"></div>` : ''}
-      ${dateExtra}
-      ${kind === 'off' ? `<div class="field full"><label>퇴직사유</label><input class="input" name="resign_reason" value="${esc(d.resign_reason || '')}" placeholder="자유 기재"></div>` : ''}
+      <div class="field"><label>입사일 *</label><input class="input" name="join_date" type="date" value="${esc(d.join_date || '')}" required></div>
     </div>`;
 }
 
@@ -292,16 +328,21 @@ function renderChecklist(kind, category, tasks, joinDate) {
 function pillFor(v) { const tone = STATE_TONE[v] || 'na'; return `<span class="pill ${tone}" style="margin-left:auto">${esc(v)}</span>`; }
 
 // 입퇴사 등록/수정 모달
-function openEntryModal(kind, data) {
+async function openEntryModal(kind, data) {
   const isOn = kind === 'on';
   const editing = !!data;
   const d = data ? { ...data, tasks: parseTasks(data.tasks) } : { category: '', tasks: {} };
+  let empList = [];
+  if (!isOn && !editing) {
+    const all = await api('GET', '/employees');
+    empList = all.filter(e => e.status !== '퇴직');
+  }
   const title = `${isOn ? '입사자' : '퇴사자'} ${editing ? '수정' : '등록'}`;
   openModal(`
     <div class="modal-head"><h3>${title}</h3><button class="x" data-x>×</button></div>
     <div class="modal-body">
       <form id="entryForm">
-        ${basicInfoFields(isOn ? 'on' : 'off', d)}
+        ${basicInfoFields(isOn ? 'on' : 'off', d, empList)}
         <div class="section-title">체크리스트 업무</div>
         <div id="checkArea">${renderChecklist(isOn ? 'on' : 'off', d.category, d.tasks, d.join_date)}</div>
       </form>
@@ -335,6 +376,18 @@ function openEntryModal(kind, data) {
   }
   form.category.addEventListener('change', rerenderChecklist);
   if (form.join_date) form.join_date.addEventListener('change', () => { checkArea.innerHTML = renderChecklist(isOn ? 'on' : 'off', curCategory(), tasks, curJoin()); });
+
+  // 퇴사자: 재직자 선택 시 인적사항 자동 채움
+  const empPick = $('#empPick', root);
+  if (empPick) empPick.addEventListener('change', () => {
+    const opt = empPick.selectedOptions[0];
+    const info = (opt && opt.value) ? {
+      employee_id: opt.value, name: opt.dataset.name, emp_no: opt.dataset.emp_no,
+      position: opt.dataset.position, field: opt.dataset.field, org: opt.dataset.org, join_date: opt.dataset.join_date,
+    } : {};
+    $('#empInfo', root).innerHTML = empInfoBlock(info);
+    checkArea.innerHTML = renderChecklist(isOn ? 'on' : 'off', curCategory(), tasks, curJoin());
+  });
   checkArea.addEventListener('change', e => {
     const el = e.target.closest('[data-task]');
     if (!el) return;
@@ -349,12 +402,15 @@ function openEntryModal(kind, data) {
   function collect() {
     const f = new FormData(form);
     const body = Object.fromEntries(f.entries());
+    delete body.employee_pick;
     body.tasks = tasks;
+    if ('employee_id' in body) body.employee_id = body.employee_id ? Number(body.employee_id) : null;
     return body;
   }
 
   $('#saveBtn', root).addEventListener('click', async () => {
     const body = collect();
+    if (!isOn && !editing && !body.employee_id) return toast('재직자를 선택하세요', true);
     if (!body.name || !body.category || (isOn ? !body.join_date : !body.leave_date)) {
       return toast('필수 항목을 입력하세요 (구분·성명·' + (isOn ? '입사일' : '퇴사예정일') + ')', true);
     }
@@ -398,52 +454,109 @@ async function viewOffboarding(view) { await listView(view, 'off'); }
 async function listView(view, kind) {
   const isOn = kind === 'on';
   const title = isOn ? '입사자 관리' : '퇴사자 관리';
+  const defs = isOn ? ONBOARDING_TASKS : OFFBOARDING_TASKS;
+  const filterableTasks = defs.filter(t => t.type === 'select');
   view.innerHTML = topbar(title,
     `<button class="btn btn-primary" id="addBtn">＋ ${isOn ? '입사자 등록' : '퇴사자 등록'}</button>`);
   wireTopbar(view);
   $('#addBtn', view).addEventListener('click', () => openEntryModal(kind));
 
-  const filter = { state: '진행중', q: '' };
+  const filter = { state: '진행중', q: '', category: '', tasks: [] };
   const wrap = document.createElement('div');
   view.appendChild(wrap);
 
   async function draw() {
     const rows = await api('GET', `/${isOn ? 'onboarding' : 'offboarding'}`);
-    const defs = isOn ? ONBOARDING_TASKS : OFFBOARDING_TASKS;
-    const filtered = rows.filter(r =>
+    let filtered = rows.filter(r =>
       (filter.state === 'all' || r.state === filter.state) &&
+      (!filter.category || r.category === filter.category) &&
       (!filter.q || (r.name || '').includes(filter.q) || (r.emp_no || '').includes(filter.q)));
+    for (const f of filter.tasks) {
+      const def = defs.find(t => t.key === f.key);
+      filtered = filtered.filter(r => {
+        const tasks = parseTasks(r.tasks);
+        const cur = tasks[f.key] ?? OPTS[def.opts][0];
+        return cur === f.value;
+      });
+    }
+
+    const baseCols = 2 + (isOn ? 0 : 1); // 대상자 + 구분 + (입사/퇴사일) + (사직원접수)
+    const colCount = baseCols + 1 + defs.length + 2;
+
     wrap.innerHTML = `
       <div class="toolbar">
         <div class="seg">
           ${['진행중', '완료', 'all'].map(s => `<button data-st="${s}" class="${filter.state === s ? 'on' : ''}">${s === 'all' ? '전체' : s}</button>`).join('')}
         </div>
+        <select class="select" id="fCat" style="width:auto"><option value="">구분 전체</option>${CATEGORIES.map(c => `<option ${filter.category === c ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select>
         <div class="search"><input class="input" id="q" placeholder="이름·사번 검색" value="${esc(filter.q)}"></div>
         <div class="spacer"></div><span class="t-muted">${filtered.length}건</span>
       </div>
+      <div class="toolbar">
+        <select class="select" id="fTaskKey" style="width:auto">
+          <option value="">+ 항목별 필터</option>
+          ${filterableTasks.map(t => `<option value="${t.key}">${esc(t.label)}</option>`).join('')}
+        </select>
+        <select class="select" id="fTaskVal" style="width:auto" disabled><option value="">값 선택</option></select>
+        <button class="btn btn-sm" id="addFilter" disabled>필터 추가</button>
+        <div class="chips">
+          ${filter.tasks.map((f, i) => {
+            const def = defs.find(t => t.key === f.key);
+            return `<span class="chip">${esc(def?.label || f.key)}: ${esc(f.value)}<i data-rm="${i}">×</i></span>`;
+          }).join('')}
+        </div>
+      </div>
       <div class="card"><div class="card-body"><div class="table-wrap">
-        <table class="tbl"><thead><tr>
-          <th>대상자</th><th>구분</th><th>${isOn ? '입사일' : '퇴사예정일'}</th>
-          ${isOn ? '' : '<th>사직원접수</th>'}<th>진행률</th><th>상태</th>
+        <table class="tbl xls-tbl"><thead><tr>
+          <th class="sticky-col">대상자</th><th>구분</th><th>${isOn ? '입사일' : '퇴사예정일'}</th>
+          ${isOn ? '' : '<th>사직원접수</th>'}
+          ${defs.map(t => `<th>${esc(t.label)}</th>`).join('')}
+          <th>진행률</th><th>상태</th>
         </tr></thead><tbody>
         ${filtered.length ? filtered.map(r => {
-          const pr = progress(defs, r.category, parseTasks(r.tasks));
+          const tasks = parseTasks(r.tasks);
+          const pr = progress(defs, r.category, tasks);
+          const active = activeTasks(defs, r.category);
           return `<tr data-id="${r.id}">
-            <td class="t-strong">${esc(r.name)} ${r.emp_no ? `<span class="t-muted">${esc(r.emp_no)}</span>` : ''}</td>
+            <td class="t-strong sticky-col">${esc(r.name)} ${r.emp_no ? `<span class="t-muted">${esc(r.emp_no)}</span>` : ''}</td>
             <td><span class="pill gray">${esc(r.category)}</span></td>
             <td>${esc(isOn ? r.join_date : r.leave_date) || '—'}</td>
             ${isOn ? '' : `<td>${esc(r.resign_date) || '—'}</td>`}
+            ${defs.map(t => {
+              if (!active.includes(t)) return `<td class="cell-na">—</td>`;
+              if (t.type === 'autodate') return `<td>${esc(computeDate(t.calc, r.join_date)) || '—'}</td>`;
+              if (t.type === 'date') return `<td>${esc(tasks[t.key]) || '—'}</td>`;
+              return `<td>${pillFor(tasks[t.key] || OPTS[t.opts][0])}</td>`;
+            }).join('')}
             <td>${progBar(pr)}</td>
             <td><span class="pill ${r.state === '완료' ? 'done' : 'blue'}">${esc(r.state)}</span></td>
           </tr>`;
-        }).join('') : `<tr><td colspan="6"><div class="empty"><div class="big">🗂️</div>${isOn ? '입사' : '퇴사'} 항목이 없습니다.<br>우측 상단에서 등록하세요.</div></td></tr>`}
+        }).join('') : `<tr><td colspan="${colCount}"><div class="empty"><div class="big">🗂️</div>${isOn ? '입사' : '퇴사'} 항목이 없습니다.<br>우측 상단에서 등록하세요.</div></td></tr>`}
         </tbody></table>
       </div></div></div>`;
 
     wrap.querySelector('.seg').addEventListener('click', e => {
       const b = e.target.closest('[data-st]'); if (!b) return; filter.state = b.dataset.st; draw();
     });
+    $('#fCat', wrap).addEventListener('change', e => { filter.category = e.target.value; draw(); });
     const q = $('#q', wrap); q.addEventListener('input', () => { filter.q = q.value; draw(); q.focus(); });
+
+    const fTaskKey = $('#fTaskKey', wrap), fTaskVal = $('#fTaskVal', wrap), addFilter = $('#addFilter', wrap);
+    fTaskKey.addEventListener('change', () => {
+      const def = filterableTasks.find(t => t.key === fTaskKey.value);
+      if (!def) { fTaskVal.innerHTML = '<option value="">값 선택</option>'; fTaskVal.disabled = true; addFilter.disabled = true; return; }
+      fTaskVal.innerHTML = OPTS[def.opts].map(o => `<option>${esc(o)}</option>`).join('');
+      fTaskVal.disabled = false; addFilter.disabled = false;
+    });
+    addFilter.addEventListener('click', () => {
+      if (!fTaskKey.value || !fTaskVal.value) return;
+      filter.tasks.push({ key: fTaskKey.value, value: fTaskVal.value });
+      draw();
+    });
+    wrap.querySelectorAll('.chip [data-rm]').forEach(b => b.addEventListener('click', () => {
+      filter.tasks.splice(Number(b.dataset.rm), 1); draw();
+    }));
+
     wrap.querySelector('tbody').addEventListener('click', e => {
       const tr = e.target.closest('[data-id]'); if (tr) (isOn ? openOnboarding : openOffboarding)(Number(tr.dataset.id));
     });

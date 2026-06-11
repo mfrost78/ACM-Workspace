@@ -196,6 +196,20 @@ table.tbl tbody tr:last-child td { border-bottom: none; }
 .seg button { padding: 6px 13px; border-radius: 7px; font-size: 12.5px; font-weight: 550; color: var(--text-2); }
 .seg button.on { background: var(--bg-elevated); color: var(--text); box-shadow: var(--shadow-sm); }
 
+/* 항목별 필터 칩 */
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip { display: inline-flex; align-items: center; gap: 6px; padding: 4px 6px 4px 10px; border-radius: 14px;
+  background: var(--accent-soft); color: var(--accent); font-size: 12px; font-weight: 600; }
+.chip i { font-style: normal; cursor: pointer; width: 16px; height: 16px; display: grid; place-items: center;
+  border-radius: 50%; opacity: .75; }
+.chip i:hover { background: rgba(0,0,0,.08); opacity: 1; }
+
+/* ===== 입퇴사자 엑셀형 표 ===== */
+table.xls-tbl th, table.xls-tbl td { white-space: nowrap; }
+table.xls-tbl .sticky-col { position: sticky; left: 0; background: var(--bg-elevated); z-index: 1; }
+table.xls-tbl tbody tr:hover .sticky-col { background: var(--bg-hover); }
+table.xls-tbl td.cell-na { color: var(--text-3); text-align: center; }
+
 /* ===== Theme toggle ===== */
 .icon-btn { width: 36px; height: 36px; border-radius: 50%; display: grid; place-items: center; font-size: 16px;
   background: var(--bg-elevated); border: 1px solid var(--border); transition: background .15s; }
@@ -216,6 +230,9 @@ table.tbl tbody tr:last-child td { border-bottom: none; }
 
 .form-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 14px 16px; }
 .form-grid .full { grid-column: 1 / -1; }
+.form-grid .contents { display: contents; }
+.static { padding: 9px 12px; border-radius: 8px; background: var(--surface-2); border: 1px solid transparent;
+  font-size: 13.5px; color: var(--text); min-height: 38px; display: flex; align-items: center; }
 .section-title { font-size: 12px; font-weight: 600; color: var(--text-3); text-transform: uppercase; letter-spacing: .04em;
   margin: 22px 0 12px; padding-bottom: 8px; border-bottom: 1px solid var(--border); }
 
