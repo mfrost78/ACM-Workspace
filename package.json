@@ -5,8 +5,8 @@
   "type": "module",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js",
-    "migrate": "node lib/migrate.js"
+    "start": "node --env-file-if-exists=.env server.js",
+    "migrate": "node --env-file-if-exists=.env lib/migrate.js"
   },
   "dependencies": {
     "express": "^4.19.2",
