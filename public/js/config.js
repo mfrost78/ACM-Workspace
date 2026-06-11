@@ -59,8 +59,8 @@ export const ONBOARDING_TASKS = [
 ];
 
 export const OFFBOARDING_TASKS = [
-  { key: 'yeoncha',         label: '연차정산',        type: 'select', opts: 'wcn', cats: ['현장', '본사', '지원/일반'] },
-  { key: 'hyeophoebi',      label: '협회비·교육비',   type: 'select', opts: 'wcn', cats: HB },
+  { key: 'yeoncha',         label: '연차정산',        type: 'amount', cats: ['현장', '본사', '지원/일반'] },
+  { key: 'hyeophoebi',      label: '협회비·교육비',   type: 'amount', cats: HB },
   { key: 'jujaebi',         label: '주재비',          type: 'select', opts: 'wcn', cats: ONLY_SITE },
   { key: 'hyuil_sudang',    label: '현장 휴일수당',   type: 'select', opts: 'wcn', cats: ONLY_SITE },
   { key: 'sangsil',         label: '상실신고',        type: 'select', opts: 'wc',  cats: A },
@@ -94,13 +94,14 @@ export function computeDate(calc, joinDate) {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
-// 진행률(%) — 활성 select 항목 중 '미*' 상태가 아닌 비율
+// 진행률(%) — 활성 select/amount 항목 중 처리 완료된 비율
 export function progress(taskDefs, category, tasks) {
-  const act = activeTasks(taskDefs, category).filter(t => t.type === 'select');
+  const act = activeTasks(taskDefs, category).filter(t => t.type === 'select' || t.type === 'amount');
   if (!act.length) return 0;
   let done = 0;
   for (const t of act) {
     const v = tasks?.[t.key];
+    if (t.type === 'amount') { if (v !== undefined && v !== null && String(v) !== '') done++; continue; }
     if (v && !String(v).startsWith('미') && v !== '미대상') done++;
   }
   return Math.round((done / act.length) * 100);
@@ -113,6 +114,33 @@ export function defaultTasks(taskDefs, category) {
     if (t.type === 'select') out[t.key] = OPTS[t.opts][0];
   }
   return out;
+}
+
+// 입사일로부터 1년 미만 경과 여부 (퇴사일 기준)
+export function under1Year(joinDate, leaveDate) {
+  if (!joinDate || !leaveDate) return false;
+  const j = new Date(joinDate + 'T00:00:00');
+  const l = new Date(leaveDate + 'T00:00:00');
+  if (isNaN(j) || isNaN(l)) return false;
+  const oneYearLater = new Date(j);
+  oneYearLater.setFullYear(oneYearLater.getFullYear() + 1);
+  return l < oneYearLater;
+}
+
+// 진행률/상태 계산용 보정 tasks — 퇴사자: 입사 1년 미만이면 퇴직금 항목을 '대상아님'으로 강제
+export function effectiveTasks(taskDefs, kind, category, tasks, joinDate, leaveDate) {
+  if (kind !== 'off') return tasks;
+  const out = { ...tasks };
+  const def = taskDefs.find(t => t.key === 'toejikgeum');
+  if (def && activeTasks(taskDefs, category).includes(def) && under1Year(joinDate, leaveDate)) {
+    out.toejikgeum = '대상아님';
+  }
+  return out;
+}
+
+// 체크리스트 진행률 기준 완료 상태 판정
+export function deriveState(taskDefs, category, tasks) {
+  return progress(taskDefs, category, tasks) === 100 ? '완료' : '진행중';
 }
 
 export const POSITIONS = ['사원', '주임', '대리', '과장', '차장', '부장', '이사대우', '이사', '상무', '전무', '부사장', '사장', '기술책임수석', '기술책임수석(STO)', '관리소장', '영선원', '미화원'];

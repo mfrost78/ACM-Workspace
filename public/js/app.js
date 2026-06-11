@@ -1,6 +1,7 @@
 import {
   CATEGORIES, OPTS, STATE_TONE, ONBOARDING_TASKS, OFFBOARDING_TASKS,
   activeTasks, computeDate, progress, defaultTasks, POSITIONS, FIELDS,
+  under1Year, effectiveTasks,
 } from './config.js';
 
 /* ============ 유틸 ============ */
@@ -138,7 +139,6 @@ const NAV = [
 let dash = {};
 async function render() {
   if (!state.user) return renderLogin();
-  try { dash = await api('GET', '/dashboard'); } catch { dash = {}; }
   const u = state.user;
   const initial = (u.name || u.username || '?').slice(0, 1);
   app.innerHTML = `
@@ -178,6 +178,26 @@ async function render() {
   const view = $('#view');
   ({ dashboard: viewDashboard, onboarding: viewOnboarding, offboarding: viewOffboarding,
      calendar: viewCalendar, employees: viewEmployees, activity: viewActivity }[state.route] || viewDashboard)(view);
+
+  refreshBadges();
+}
+
+// 사이드바 배지(진행중 건수)를 백그라운드에서 갱신 — 화면 전환을 막지 않음
+async function refreshBadges() {
+  try {
+    dash = await api('GET', '/dashboard');
+    NAV.forEach(n => {
+      if (!n.badgeKey) return;
+      const btn = document.querySelector(`[data-route="${n.id}"]`);
+      if (!btn) return;
+      let badge = btn.querySelector('.badge');
+      const val = dash[n.badgeKey];
+      if (val) {
+        if (!badge) { badge = document.createElement('span'); badge.className = 'badge'; btn.appendChild(badge); }
+        badge.textContent = val;
+      } else if (badge) badge.remove();
+    });
+  } catch { /* 무시 */ }
 }
 
 function topbar(title, rightHtml = '') {
@@ -190,11 +210,13 @@ function wireTopbar(root) { const b = $('#themeBtn', root); if (b) b.addEventLis
 async function viewDashboard(view) {
   view.innerHTML = topbar('대시보드') + `<div id="dashBody"><div class="empty">불러오는 중…</div></div>`;
   wireTopbar(view);
-  const [onb, ofb, acts] = await Promise.all([
+  const [dashData, onb, ofb, acts] = await Promise.all([
+    api('GET', '/dashboard'),
     api('GET', '/onboarding?state=진행중'),
     api('GET', '/offboarding?state=진행중'),
     api('GET', '/activity?limit=8'),
   ]);
+  dash = dashData;
   const upcoming = [...onb.map(o => ({ ...o, kind: 'in', date: o.join_date })),
                     ...ofb.map(o => ({ ...o, kind: 'out', date: o.leave_date }))]
     .filter(x => x.date).sort((a, b) => a.date.localeCompare(b.date)).slice(0, 8);
@@ -271,15 +293,10 @@ function basicInfoFields(kind, d = {}, empList = []) {
 
   if (kind === 'off') {
     const empPicker = !d.id ? `
-      <div class="field full"><label>재직자 선택 *</label>
-        <select class="select" name="employee_pick" id="empPick" required>
-          <option value="">선택하세요</option>
-          ${empList.map(e => `<option value="${e.id}"
-              data-name="${esc(e.name)}" data-emp_no="${esc(e.emp_no || '')}" data-position="${esc(e.position || '')}"
-              data-field="${esc(e.field || '')}" data-org="${esc(e.org || '')}" data-join_date="${esc(e.join_date || '')}">
-              ${esc(e.name)}${e.emp_no ? ` (${esc(e.emp_no)})` : ''}${e.dept ? ` · ${esc(e.dept)}` : ''}
-            </option>`).join('')}
-        </select>
+      <div class="field full suggest-wrap">
+        <label>재직자 선택 *</label>
+        <input class="input" id="empSearch" placeholder="이름·사번·부서·소속으로 검색" autocomplete="off">
+        <div id="empSuggest" class="suggest-list"></div>
       </div>` : '';
     return `
     <div class="form-grid">
@@ -304,10 +321,15 @@ function basicInfoFields(kind, d = {}, empList = []) {
     </div>`;
 }
 
-function renderChecklist(kind, category, tasks, joinDate) {
+function renderChecklist(kind, category, tasks, joinDate, leaveDate) {
   const defs = kind === 'on' ? ONBOARDING_TASKS : OFFBOARDING_TASKS;
   const act = activeTasks(defs, category);
   if (!act.length) return `<div class="empty t-muted">구분을 선택하면 해당 업무 항목이 표시됩니다.</div>`;
+  // 퇴사자: 입사 1년 미만이면 퇴직금 항목을 자동으로 '대상아님' 처리
+  if (kind === 'off') {
+    const eff = effectiveTasks(defs, 'off', category, tasks, joinDate, leaveDate);
+    if (eff.toejikgeum !== tasks.toejikgeum) tasks.toejikgeum = eff.toejikgeum;
+  }
   return `<div class="check-grid">${act.map(t => {
     const val = tasks?.[t.key] ?? '';
     if (t.type === 'autodate') {
@@ -319,10 +341,17 @@ function renderChecklist(kind, category, tasks, joinDate) {
       return `<div class="check-item"><div class="ci-label">${esc(t.label)}</div>
         <input class="input" type="date" data-task="${t.key}" value="${esc(val)}"></div>`;
     }
+    if (t.type === 'amount') {
+      const done = val !== undefined && val !== null && val !== '';
+      return `<div class="check-item"><div class="ci-label">${esc(t.label)} <span class="pill ${done ? 'done' : 'todo'}" style="margin-left:auto">${done ? '완료' : '미완료'}</span></div>
+        <input class="input" type="number" min="0" placeholder="금액 입력" data-task="${t.key}" value="${esc(val)}"></div>`;
+    }
     const opts = OPTS[t.opts];
     const cur = val || opts[0];
+    const forcedNA = kind === 'off' && t.key === 'toejikgeum' && under1Year(joinDate, leaveDate);
     return `<div class="check-item"><div class="ci-label">${esc(t.label)} ${pillFor(cur)}</div>
-      <select class="select" data-task="${t.key}">${opts.map(o => `<option ${o === cur ? 'selected' : ''}>${o}</option>`).join('')}</select></div>`;
+      <select class="select" data-task="${t.key}" ${forcedNA ? 'disabled' : ''}>${opts.map(o => `<option ${o === cur ? 'selected' : ''}>${o}</option>`).join('')}</select>
+      ${forcedNA ? `<div class="ci-hint" style="margin-top:4px">입사 1년 미만 — 자동 대상아님</div>` : ''}</div>`;
   }).join('')}</div>`;
 }
 function pillFor(v) { const tone = STATE_TONE[v] || 'na'; return `<span class="pill ${tone}" style="margin-left:auto">${esc(v)}</span>`; }
@@ -331,7 +360,7 @@ function pillFor(v) { const tone = STATE_TONE[v] || 'na'; return `<span class="p
 async function openEntryModal(kind, data) {
   const isOn = kind === 'on';
   const editing = !!data;
-  const d = data ? { ...data, tasks: parseTasks(data.tasks) } : { category: '', tasks: {} };
+  const d = data ? { ...data, tasks: parseTasks(data.tasks) } : { category: CATEGORIES[0], tasks: {} };
   let empList = [];
   if (!isOn && !editing) {
     const all = await api('GET', '/employees');
@@ -344,7 +373,7 @@ async function openEntryModal(kind, data) {
       <form id="entryForm">
         ${basicInfoFields(isOn ? 'on' : 'off', d, empList)}
         <div class="section-title">체크리스트 업무</div>
-        <div id="checkArea">${renderChecklist(isOn ? 'on' : 'off', d.category, d.tasks, d.join_date)}</div>
+        <div id="checkArea">${renderChecklist(isOn ? 'on' : 'off', d.category, d.tasks, d.join_date, d.leave_date)}</div>
       </form>
     </div>
     <div class="modal-foot">
@@ -364,6 +393,7 @@ async function openEntryModal(kind, data) {
 
   function curCategory() { return form.category.value; }
   function curJoin() { return form.join_date ? form.join_date.value : ''; }
+  function curLeave() { return form.leave_date ? form.leave_date.value : ''; }
   function rerenderChecklist() {
     // 구분 변경 시 활성 항목 기준으로 tasks 정리 + 기본값 보강
     const cat = curCategory();
@@ -372,22 +402,47 @@ async function openEntryModal(kind, data) {
     for (const t of activeTasks(isOn ? ONBOARDING_TASKS : OFFBOARDING_TASKS, cat)) {
       if (merged[t.key] !== undefined) tasks[t.key] = merged[t.key];
     }
-    checkArea.innerHTML = renderChecklist(isOn ? 'on' : 'off', cat, tasks, curJoin());
+    checkArea.innerHTML = renderChecklist(isOn ? 'on' : 'off', cat, tasks, curJoin(), curLeave());
   }
   form.category.addEventListener('change', rerenderChecklist);
-  if (form.join_date) form.join_date.addEventListener('change', () => { checkArea.innerHTML = renderChecklist(isOn ? 'on' : 'off', curCategory(), tasks, curJoin()); });
+  if (form.join_date) form.join_date.addEventListener('change', () => { checkArea.innerHTML = renderChecklist(isOn ? 'on' : 'off', curCategory(), tasks, curJoin(), curLeave()); });
+  if (form.leave_date) form.leave_date.addEventListener('change', () => { checkArea.innerHTML = renderChecklist(isOn ? 'on' : 'off', curCategory(), tasks, curJoin(), curLeave()); });
 
-  // 퇴사자: 재직자 선택 시 인적사항 자동 채움
-  const empPick = $('#empPick', root);
-  if (empPick) empPick.addEventListener('change', () => {
-    const opt = empPick.selectedOptions[0];
-    const info = (opt && opt.value) ? {
-      employee_id: opt.value, name: opt.dataset.name, emp_no: opt.dataset.emp_no,
-      position: opt.dataset.position, field: opt.dataset.field, org: opt.dataset.org, join_date: opt.dataset.join_date,
-    } : {};
-    $('#empInfo', root).innerHTML = empInfoBlock(info);
-    checkArea.innerHTML = renderChecklist(isOn ? 'on' : 'off', curCategory(), tasks, curJoin());
-  });
+  // 퇴사자: 재직자 검색 선택 시 인적사항 자동 채움
+  const empSearch = $('#empSearch', root);
+  const empSuggest = $('#empSuggest', root);
+  if (empSearch) {
+    const norm = (s) => String(s || '').toLowerCase();
+    empSearch.addEventListener('input', () => {
+      const term = norm(empSearch.value).trim();
+      if (!term) { empSuggest.innerHTML = ''; empSuggest.classList.remove('open'); return; }
+      const matches = empList.filter(e =>
+        norm(e.name).includes(term) || norm(e.emp_no).includes(term) || norm(e.dept).includes(term) || norm(e.org).includes(term)
+      ).slice(0, 8);
+      if (!matches.length) { empSuggest.innerHTML = `<div class="suggest-empty">검색 결과 없음</div>`; empSuggest.classList.add('open'); return; }
+      empSuggest.innerHTML = matches.map(e => `<div class="suggest-item" data-id="${e.id}"
+          data-name="${esc(e.name)}" data-emp_no="${esc(e.emp_no || '')}" data-position="${esc(e.position || '')}"
+          data-field="${esc(e.field || '')}" data-org="${esc(e.org || '')}" data-join_date="${esc(e.join_date || '')}">
+          <b>${esc(e.name)}</b> ${e.emp_no ? `<span class="t-muted">${esc(e.emp_no)}</span>` : ''}${e.dept ? ` <span class="t-muted">· ${esc(e.dept)}</span>` : ''}
+        </div>`).join('');
+      empSuggest.classList.add('open');
+    });
+    empSuggest.addEventListener('click', e => {
+      const it = e.target.closest('.suggest-item');
+      if (!it) return;
+      const info = {
+        employee_id: it.dataset.id, name: it.dataset.name, emp_no: it.dataset.emp_no,
+        position: it.dataset.position, field: it.dataset.field, org: it.dataset.org, join_date: it.dataset.join_date,
+      };
+      empSearch.value = info.name;
+      empSuggest.innerHTML = ''; empSuggest.classList.remove('open');
+      $('#empInfo', root).innerHTML = empInfoBlock(info);
+      checkArea.innerHTML = renderChecklist(isOn ? 'on' : 'off', curCategory(), tasks, curJoin(), curLeave());
+    });
+    document.addEventListener('click', e => {
+      if (!empSearch.contains(e.target) && !empSuggest.contains(e.target)) { empSuggest.innerHTML = ''; empSuggest.classList.remove('open'); }
+    });
+  }
   checkArea.addEventListener('change', e => {
     const el = e.target.closest('[data-task]');
     if (!el) return;
@@ -396,6 +451,14 @@ async function openEntryModal(kind, data) {
     if (el.tagName === 'SELECT') {
       const lbl = el.parentElement.querySelector('.ci-label .pill');
       if (lbl) { lbl.textContent = el.value; lbl.className = `pill ${STATE_TONE[el.value] || 'na'}`; lbl.style.marginLeft = 'auto'; }
+    } else if (el.type === 'number') {
+      const lbl = el.parentElement.querySelector('.ci-label .pill');
+      if (lbl) {
+        const done = el.value !== '';
+        lbl.textContent = done ? '완료' : '미완료';
+        lbl.className = `pill ${done ? 'done' : 'todo'}`;
+        lbl.style.marginLeft = 'auto';
+      }
     }
   });
 
@@ -462,6 +525,7 @@ async function listView(view, kind) {
   $('#addBtn', view).addEventListener('click', () => openEntryModal(kind));
 
   const filter = { state: '진행중', q: '', category: '', tasks: [] };
+  const selected = new Set();
   const wrap = document.createElement('div');
   view.appendChild(wrap);
 
@@ -480,8 +544,12 @@ async function listView(view, kind) {
       });
     }
 
+    // 더 이상 화면에 없는 항목의 선택 상태는 정리
+    const visibleIds = new Set(filtered.map(r => r.id));
+    for (const id of [...selected]) if (!visibleIds.has(id)) selected.delete(id);
+
     const baseCols = 2 + (isOn ? 0 : 1); // 대상자 + 구분 + (입사/퇴사일) + (사직원접수)
-    const colCount = baseCols + 1 + defs.length + 2;
+    const colCount = 1 + baseCols + 1 + defs.length + 2; // 체크박스 + 진행률/상태
 
     wrap.innerHTML = `
       <div class="toolbar">
@@ -490,6 +558,7 @@ async function listView(view, kind) {
         </div>
         <select class="select" id="fCat" style="width:auto"><option value="">구분 전체</option>${CATEGORIES.map(c => `<option ${filter.category === c ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select>
         <div class="search"><input class="input" id="q" placeholder="이름·사번 검색" value="${esc(filter.q)}"></div>
+        <button class="btn btn-sm btn-danger" id="bulkDel" ${selected.size ? '' : 'disabled'}>선택 삭제${selected.size ? ` (${selected.size})` : ''}</button>
         <div class="spacer"></div><span class="t-muted">${filtered.length}건</span>
       </div>
       <div class="toolbar">
@@ -508,28 +577,37 @@ async function listView(view, kind) {
       </div>
       <div class="card"><div class="card-body"><div class="table-wrap">
         <table class="tbl xls-tbl"><thead><tr>
-          <th class="sticky-col">대상자</th><th>구분</th><th>${isOn ? '입사일' : '퇴사예정일'}</th>
+          <th class="sticky-col sel-col"><input type="checkbox" id="selAll" ${filtered.length && filtered.every(r => selected.has(r.id)) ? 'checked' : ''}></th>
+          <th class="sticky-col name-col">대상자</th>
+          <th>진행률</th><th>상태</th>
+          <th>구분</th><th>${isOn ? '입사일' : '퇴사예정일'}</th>
           ${isOn ? '' : '<th>사직원접수</th>'}
           ${defs.map(t => `<th>${esc(t.label)}</th>`).join('')}
-          <th>진행률</th><th>상태</th>
         </tr></thead><tbody>
         ${filtered.length ? filtered.map(r => {
           const tasks = parseTasks(r.tasks);
-          const pr = progress(defs, r.category, tasks);
+          const eff = isOn ? tasks : effectiveTasks(defs, 'off', r.category, tasks, r.join_date, r.leave_date);
+          const pr = progress(defs, r.category, eff);
           const active = activeTasks(defs, r.category);
           return `<tr data-id="${r.id}">
-            <td class="t-strong sticky-col">${esc(r.name)} ${r.emp_no ? `<span class="t-muted">${esc(r.emp_no)}</span>` : ''}</td>
+            <td class="sticky-col sel-col"><input type="checkbox" class="rowSel" data-id="${r.id}" ${selected.has(r.id) ? 'checked' : ''}></td>
+            <td class="t-strong sticky-col name-col"><span class="name-link" data-id="${r.id}">${esc(r.name)}</span> ${r.emp_no ? `<span class="t-muted">${esc(r.emp_no)}</span>` : ''}</td>
+            <td>${progBar(pr)}</td>
+            <td><span class="pill ${r.state === '완료' ? 'done' : 'blue'}">${esc(r.state)}</span></td>
             <td><span class="pill gray">${esc(r.category)}</span></td>
             <td>${esc(isOn ? r.join_date : r.leave_date) || '—'}</td>
             ${isOn ? '' : `<td>${esc(r.resign_date) || '—'}</td>`}
             ${defs.map(t => {
               if (!active.includes(t)) return `<td class="cell-na">—</td>`;
-              if (t.type === 'autodate') return `<td>${esc(computeDate(t.calc, r.join_date)) || '—'}</td>`;
-              if (t.type === 'date') return `<td>${esc(tasks[t.key]) || '—'}</td>`;
-              return `<td>${pillFor(tasks[t.key] || OPTS[t.opts][0])}</td>`;
+              if (t.type === 'autodate') return `<td class="cell-na">${esc(computeDate(t.calc, r.join_date)) || '—'}</td>`;
+              const forcedNA = !isOn && t.key === 'toejikgeum' && under1Year(r.join_date, r.leave_date);
+              if (forcedNA) return `<td class="cell-na">대상아님</td>`;
+              if (t.type === 'date') return `<td><input type="date" class="cell-input" data-id="${r.id}" data-task="${t.key}" value="${esc(tasks[t.key] || '')}"></td>`;
+              if (t.type === 'amount') return `<td><input type="number" min="0" class="cell-input" placeholder="금액" data-id="${r.id}" data-task="${t.key}" value="${esc(tasks[t.key] ?? '')}"></td>`;
+              const cur = tasks[t.key] || OPTS[t.opts][0];
+              const tone = STATE_TONE[cur] || 'na';
+              return `<td><select class="cell-select tone-${tone}" data-id="${r.id}" data-task="${t.key}">${OPTS[t.opts].map(o => `<option ${o === cur ? 'selected' : ''}>${esc(o)}</option>`).join('')}</select></td>`;
             }).join('')}
-            <td>${progBar(pr)}</td>
-            <td><span class="pill ${r.state === '완료' ? 'done' : 'blue'}">${esc(r.state)}</span></td>
           </tr>`;
         }).join('') : `<tr><td colspan="${colCount}"><div class="empty"><div class="big">🗂️</div>${isOn ? '입사' : '퇴사'} 항목이 없습니다.<br>우측 상단에서 등록하세요.</div></td></tr>`}
         </tbody></table>
@@ -557,8 +635,40 @@ async function listView(view, kind) {
       filter.tasks.splice(Number(b.dataset.rm), 1); draw();
     }));
 
-    wrap.querySelector('tbody').addEventListener('click', e => {
-      const tr = e.target.closest('[data-id]'); if (tr) (isOn ? openOnboarding : openOffboarding)(Number(tr.dataset.id));
+    // 이름 클릭시에만 상세 팝업 오픈
+    wrap.querySelectorAll('.name-link').forEach(el => el.addEventListener('click', () => {
+      (isOn ? openOnboarding : openOffboarding)(Number(el.dataset.id));
+    }));
+
+    // 체크리스트 항목 인라인 변경
+    wrap.querySelector('tbody').addEventListener('change', async e => {
+      const el = e.target.closest('[data-task]');
+      if (!el) return;
+      const id = Number(el.dataset.id);
+      const key = el.dataset.task;
+      await api('PUT', `/${isOn ? 'onboarding' : 'offboarding'}/${id}`, { tasks: { [key]: el.value } });
+      draw();
+    });
+
+    // 체크박스 선택
+    const selAll = $('#selAll', wrap);
+    selAll.addEventListener('change', () => {
+      filtered.forEach(r => { if (selAll.checked) selected.add(r.id); else selected.delete(r.id); });
+      draw();
+    });
+    wrap.querySelectorAll('.rowSel').forEach(cb => cb.addEventListener('change', () => {
+      const id = Number(cb.dataset.id);
+      if (cb.checked) selected.add(id); else selected.delete(id);
+      draw();
+    }));
+
+    // 일괄 삭제
+    $('#bulkDel', wrap).addEventListener('click', async () => {
+      if (!selected.size) return;
+      if (!confirm(`선택한 ${selected.size}건을 삭제하시겠습니까? 이 작업은 되돌릴 수 없습니다.`)) return;
+      await api('POST', `/${isOn ? 'onboarding' : 'offboarding'}/bulk-delete`, { ids: [...selected] });
+      selected.clear();
+      draw();
     });
   }
   draw();
@@ -591,7 +701,7 @@ async function viewCalendar(view) {
           <button class="icon-btn" id="nextM">›</button>
           <button class="btn btn-sm" id="todayBtn">오늘</button>
           <div class="spacer"></div>
-          <div class="legend"><span><span class="dot in"></span>입사예정</span><span><span class="dot out"></span>퇴사예정</span></div>
+          <div class="legend"><span><span class="dot in"></span>입사예정</span><span><span class="dot out"></span>퇴사예정</span><span><span class="dot eval"></span>평가예정</span></div>
         </div>
         <div class="cal-grid">
           ${['일', '월', '화', '수', '목', '금', '토'].map(d => `<div class="cal-dow">${d}</div>`).join('')}
@@ -600,9 +710,9 @@ async function viewCalendar(view) {
             const evs = byDate[ds] || [];
             return `<div class="cal-cell ${c.dim ? 'dim' : ''} ${ds === tk ? 'today' : ''}">
               <span class="dnum">${c.date.getDate()}</span>
-              ${evs.map(ev => `<div class="cal-ev ${ev.type === 'onboarding' ? 'in' : 'out'} ${ev.state === '완료' ? 'done-state' : ''}"
+              ${evs.map(ev => `<div class="cal-ev ${ev.type === 'onboarding' ? 'in' : ev.type === 'offboarding' ? 'out' : 'eval'} ${ev.state === '완료' ? 'done-state' : ''}"
                   data-type="${ev.type}" data-id="${ev.id}" title="${esc(ev.title)} (${esc(ev.category)})">
-                  ${ev.type === 'onboarding' ? '▸' : '◂'} ${esc(ev.title)}</div>`).join('')}
+                  ${ev.type === 'onboarding' ? '▸' : ev.type === 'offboarding' ? '◂' : '★'} ${esc(ev.title)}</div>`).join('')}
             </div>`;
           }).join('')}
         </div>
@@ -612,7 +722,7 @@ async function viewCalendar(view) {
     $('#todayBtn', body).addEventListener('click', () => { calRef = new Date(); calRef.setDate(1); draw(); });
     body.querySelector('.cal-grid').addEventListener('click', e => {
       const ev = e.target.closest('[data-type]'); if (!ev) return;
-      (ev.dataset.type === 'onboarding' ? openOnboarding : openOffboarding)(Number(ev.dataset.id));
+      (ev.dataset.type === 'offboarding' ? openOffboarding : openOnboarding)(Number(ev.dataset.id));
     });
   }
   draw();
@@ -623,17 +733,24 @@ async function viewEmployees(view) {
   view.innerHTML = topbar('재직자 현황', `<button class="btn btn-primary" id="addEmp">＋ 인원 추가</button>`);
   wireTopbar(view);
   $('#addEmp', view).addEventListener('click', () => openEmpModal());
-  const meta = await api('GET', '/employees/meta');
   const filter = { status: '재직', q: '', field: '', org: '' };
   const wrap = document.createElement('div'); view.appendChild(wrap);
 
-  async function draw() {
+  function buildQs() {
     const qs = new URLSearchParams();
     if (filter.status !== 'all') qs.set('status', filter.status);
     if (filter.q) qs.set('q', filter.q);
     if (filter.field) qs.set('field', filter.field);
     if (filter.org) qs.set('org', filter.org);
-    const rows = await api('GET', '/employees?' + qs.toString());
+    return qs;
+  }
+  const [meta, firstRows] = await Promise.all([
+    api('GET', '/employees/meta'),
+    api('GET', '/employees?' + buildQs().toString()),
+  ]);
+
+  async function draw(rows) {
+    rows = rows ?? await api('GET', '/employees?' + buildQs().toString());
     wrap.innerHTML = `
       <div class="toolbar">
         <div class="seg">${['재직', '휴직', '퇴직', 'all'].map(s => `<button data-st="${s}" class="${filter.status === s ? 'on' : ''}">${s === 'all' ? '전체' : s}</button>`).join('')}</div>
@@ -660,7 +777,7 @@ async function viewEmployees(view) {
     $('#fOrg', wrap).addEventListener('change', e => { filter.org = e.target.value; draw(); });
     wrap.querySelector('tbody').addEventListener('click', e => { const tr = e.target.closest('[data-id]'); if (tr) openEmpModal(Number(tr.dataset.id)); });
   }
-  draw();
+  draw(firstRows);
 }
 
 async function openEmpModal(id) {

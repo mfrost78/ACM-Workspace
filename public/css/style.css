@@ -110,6 +110,7 @@ a { color: var(--accent); text-decoration: none; }
 .btn-sm { padding: 6px 12px; font-size: 12.5px; border-radius: 8px; }
 .btn-ghost { background: transparent; border-color: transparent; }
 .btn-ghost:hover { background: var(--bg-hover); }
+.btn:disabled { opacity: .45; cursor: default; pointer-events: none; }
 
 /* ===== Layout ===== */
 .shell { display: grid; grid-template-columns: 248px 1fr; min-height: 100vh; }
@@ -206,9 +207,27 @@ table.tbl tbody tr:last-child td { border-bottom: none; }
 
 /* ===== 입퇴사자 엑셀형 표 ===== */
 table.xls-tbl th, table.xls-tbl td { white-space: nowrap; }
-table.xls-tbl .sticky-col { position: sticky; left: 0; background: var(--bg-elevated); z-index: 1; }
+table.xls-tbl .sticky-col { position: sticky; background: var(--bg-elevated); z-index: 1; }
+table.xls-tbl .sticky-col.sel-col { left: 0; z-index: 2; }
+table.xls-tbl .sticky-col.name-col { left: 44px; }
+table.xls-tbl tbody tr:hover { cursor: default; }
 table.xls-tbl tbody tr:hover .sticky-col { background: var(--bg-hover); }
 table.xls-tbl td.cell-na { color: var(--text-3); text-align: center; }
+table.xls-tbl th.sel-col, table.xls-tbl td.sel-col { width: 36px; text-align: center; padding-left: 8px; padding-right: 8px; }
+
+/* 리스트 인라인 편집 */
+table.xls-tbl .cell-input, table.xls-tbl .cell-select {
+  width: auto; min-width: 84px; padding: 5px 8px; font-size: 12.5px; border-radius: 7px;
+  background: var(--surface-2); border: 1px solid var(--border);
+}
+table.xls-tbl .cell-select { padding-right: 24px; background-position: right 7px center; }
+table.xls-tbl input[type="number"].cell-input { min-width: 90px; }
+table.xls-tbl input[type="date"].cell-input { min-width: 130px; }
+table.xls-tbl .cell-select.tone-done { background-color: var(--tone-done-bg); color: var(--tone-done-fg); border-color: transparent; }
+table.xls-tbl .cell-select.tone-todo { background-color: var(--tone-todo-bg); color: var(--tone-todo-fg); border-color: transparent; }
+table.xls-tbl .cell-select.tone-na   { background-color: var(--tone-na-bg);   color: var(--tone-na-fg);   border-color: transparent; }
+.name-link { cursor: pointer; }
+.name-link:hover { text-decoration: underline; color: var(--accent); }
 
 /* ===== Theme toggle ===== */
 .icon-btn { width: 36px; height: 36px; border-radius: 50%; display: grid; place-items: center; font-size: 16px;
@@ -236,6 +255,17 @@ table.xls-tbl td.cell-na { color: var(--text-3); text-align: center; }
 .section-title { font-size: 12px; font-weight: 600; color: var(--text-3); text-transform: uppercase; letter-spacing: .04em;
   margin: 22px 0 12px; padding-bottom: 8px; border-bottom: 1px solid var(--border); }
 
+/* 재직자 검색 선택 */
+.suggest-wrap { position: relative; }
+.suggest-list { display: none; position: absolute; top: calc(100% + 4px); left: 0; right: 0; max-height: 240px;
+  overflow-y: auto; background: var(--bg-elevated); border: 1px solid var(--border); border-radius: 10px;
+  box-shadow: var(--shadow); z-index: 20; }
+.suggest-list.open { display: block; }
+.suggest-item { padding: 9px 12px; font-size: 13px; cursor: pointer; border-bottom: 1px solid var(--border); }
+.suggest-item:last-child { border-bottom: none; }
+.suggest-item:hover { background: var(--bg-hover); }
+.suggest-empty { padding: 10px 12px; font-size: 12.5px; color: var(--text-3); }
+
 /* checklist items */
 .check-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; }
 .check-item { background: var(--surface-2); border: 1px solid var(--border); border-radius: 12px; padding: 11px 13px; }
@@ -258,11 +288,13 @@ table.xls-tbl td.cell-na { color: var(--text-3); text-align: center; }
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
 .cal-ev.in { background: rgba(52,199,89,.16); color: var(--tone-done-fg); }
 .cal-ev.out { background: rgba(255,59,48,.14); color: var(--red); }
+.cal-ev.eval { background: rgba(10,132,255,.14); color: var(--accent); }
 .cal-ev.done-state { opacity: .55; }
 
 /* legend */
 .legend { display: flex; gap: 16px; align-items: center; font-size: 12.5px; color: var(--text-2); }
 .legend span { display: inline-flex; align-items: center; gap: 6px; }
+.dot.eval { background: var(--accent); }
 
 /* empty / misc */
 .empty { text-align: center; padding: 54px 20px; color: var(--text-3); }

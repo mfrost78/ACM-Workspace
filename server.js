@@ -7,6 +7,10 @@ import {
   destroySession, requireAuth, SESSION_HOURS,
   lockRemainingMin, recordFail, clearFail,
 } from './lib/auth.js';
+import {
+  ONBOARDING_TASKS, OFFBOARDING_TASKS, activeTasks, computeDate,
+  deriveState, effectiveTasks,
+} from './public/js/config.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -61,8 +65,10 @@ function kstTodayStr() {
   return new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 10);
 }
 
-// 입사자 1건을 재직자 현황에 반영(입사 확정과 동일 로직) — 수동 확정/자동 확정 공용
-async function applyOnboardingComplete(o) {
+const tasksObj = (v) => v || {};
+
+// 입사자 1건의 인적사항을 재직자 현황에 동기화 (state는 변경하지 않음)
+async function syncEmployeeFromOnboarding(o) {
   let empId = o.employee_id;
   if (empId) {
     await run(`UPDATE employees SET status='재직', emp_no=?, name=?, position=?, field=?, join_date=?, org=?, updated_at=now() WHERE id=?`,
@@ -72,18 +78,37 @@ async function applyOnboardingComplete(o) {
       `INSERT INTO employees (emp_no, name, position, status, field, join_date, org) VALUES (?, ?, ?, '재직', ?, ?, ?) RETURNING id`,
       [o.emp_no, o.name, o.position, o.field, o.join_date, o.org]);
     empId = row.id;
+    await run(`UPDATE onboarding SET employee_id=?, updated_at=now() WHERE id=?`, [empId, o.id]);
   }
+  return empId;
+}
+
+// 입사 확정(수동) — 재직자 반영 + 체크리스트 상태를 완료로 강제
+async function applyOnboardingComplete(o) {
+  const empId = await syncEmployeeFromOnboarding(o);
   await run(`UPDATE onboarding SET state='완료', employee_id=?, updated_at=now() WHERE id=?`, [empId, o.id]);
   return empId;
 }
 
-// 입사일이 도래한 '진행중' 입사자를 자동으로 재직자 현황에 반영
+// 입사일이 도래했지만 아직 재직자 현황에 반영되지 않은 입사자를 자동 반영 (체크리스트 상태는 그대로 유지)
 async function autoCompleteDueOnboarding(actor) {
   const today = kstTodayStr();
-  const due = await q(`SELECT * FROM onboarding WHERE state='진행중' AND join_date <> '' AND join_date <= ?`, [today]);
+  const due = await q(`SELECT * FROM onboarding WHERE employee_id IS NULL AND join_date <> '' AND join_date <= ?`, [today]);
   for (const o of due) {
-    await applyOnboardingComplete(o);
-    await logActivity({ userId: actor?.id, userName: actor?.name, action: '입사일 도래 → 자동 재직자 반영', targetType: 'onboarding', targetId: o.id, detail: o.name });
+    await syncEmployeeFromOnboarding(o);
+    await logActivity({ userId: actor?.id, userName: actor?.name, action: '입사일 도래 → 재직자 현황 반영', targetType: 'onboarding', targetId: o.id, detail: o.name });
+  }
+}
+
+// state='완료'인데 실제 체크리스트 진행률이 100%가 아닌 항목을 '진행중'으로 재조정
+async function syncCompletionStates(table, defs, isOff) {
+  const cols = isOff ? 'id, category, tasks, join_date, leave_date' : 'id, category, tasks, join_date';
+  const rows = await q(`SELECT ${cols} FROM ${table} WHERE state='완료'`);
+  for (const r of rows) {
+    let tasks = tasksObj(r.tasks);
+    if (isOff) tasks = effectiveTasks(defs, 'off', r.category, tasks, r.join_date, r.leave_date);
+    const st = deriveState(defs, r.category, tasks);
+    if (st !== '완료') await run(`UPDATE ${table} SET state=?, updated_at=now() WHERE id=?`, [st, r.id]);
   }
 }
 
@@ -200,6 +225,7 @@ const tasksVal = (b) => JSON.stringify(b.tasks || {});
 
 app.get('/api/onboarding', requireAuth, wrap(async (req, res) => {
   await autoCompleteDueOnboarding(req.user);
+  await syncCompletionStates('onboarding', ONBOARDING_TASKS, false);
   const { state } = req.query;
   const sql = `SELECT * FROM onboarding ${state ? 'WHERE state = ?' : ''} ORDER BY join_date DESC, id DESC`;
   res.json(await q(sql, state ? [state] : []));
@@ -224,6 +250,12 @@ app.post('/api/onboarding', requireAuth, wrap(async (req, res) => {
 app.put('/api/onboarding/:id', requireAuth, wrap(async (req, res) => {
   const id = Number(req.params.id);
   const b = req.body || {};
+  if ('tasks' in b) {
+    const cur = await one('SELECT category, tasks FROM onboarding WHERE id = ?', [id]);
+    if (!cur) return res.status(404).json({ error: '없음' });
+    b.tasks = { ...tasksObj(cur.tasks), ...b.tasks };
+    b.state = deriveState(ONBOARDING_TASKS, b.category ?? cur.category, b.tasks);
+  }
   const sets = ONB_FIELDS.filter(f => f in b);
   if (!sets.length) return res.status(400).json({ error: '변경 항목 없음' });
   const row = await one(
@@ -249,10 +281,21 @@ app.delete('/api/onboarding/:id', requireAuth, wrap(async (req, res) => {
   res.json({ ok: true });
 }));
 
+app.post('/api/onboarding/bulk-delete', requireAuth, wrap(async (req, res) => {
+  const ids = [...new Set((req.body?.ids || []).map(Number).filter(n => Number.isInteger(n) && n > 0))];
+  if (!ids.length) return res.json({ ok: true, count: 0 });
+  const ph = ids.map(() => '?').join(',');
+  const rows = await q(`SELECT id, name FROM onboarding WHERE id IN (${ph})`, ids);
+  await run(`DELETE FROM onboarding WHERE id IN (${ph})`, ids);
+  for (const r of rows) await logActivity({ userId: req.user.id, userName: req.user.name, action: '입사자 일괄삭제', targetType: 'onboarding', targetId: r.id, detail: r.name });
+  res.json({ ok: true, count: rows.length });
+}));
+
 /* ---------------- Offboarding ---------------- */
 const OFB_FIELDS = ['emp_no', 'name', 'category', 'position', 'org', 'field', 'join_date', 'leave_date', 'resign_date', 'resign_reason', 'tasks', 'state', 'employee_id'];
 
 app.get('/api/offboarding', requireAuth, wrap(async (req, res) => {
+  await syncCompletionStates('offboarding', OFFBOARDING_TASKS, true);
   const { state } = req.query;
   const sql = `SELECT * FROM offboarding ${state ? 'WHERE state = ?' : ''} ORDER BY leave_date DESC, id DESC`;
   res.json(await q(sql, state ? [state] : []));
@@ -279,6 +322,16 @@ app.put('/api/offboarding/:id', requireAuth, wrap(async (req, res) => {
   const id = Number(req.params.id);
   const b = req.body || {};
   if ('employee_id' in b) b.employee_id = b.employee_id ? Number(b.employee_id) : null;
+  if ('tasks' in b) {
+    const cur = await one('SELECT category, tasks, join_date, leave_date FROM offboarding WHERE id = ?', [id]);
+    if (!cur) return res.status(404).json({ error: '없음' });
+    b.tasks = { ...tasksObj(cur.tasks), ...b.tasks };
+    const cat = b.category ?? cur.category;
+    const join = b.join_date ?? cur.join_date;
+    const leave = b.leave_date ?? cur.leave_date;
+    const eff = effectiveTasks(OFFBOARDING_TASKS, 'off', cat, b.tasks, join, leave);
+    b.state = deriveState(OFFBOARDING_TASKS, cat, eff);
+  }
   const sets = OFB_FIELDS.filter(f => f in b);
   if (!sets.length) return res.status(400).json({ error: '변경 항목 없음' });
   const row = await one(
@@ -309,16 +362,38 @@ app.delete('/api/offboarding/:id', requireAuth, wrap(async (req, res) => {
   res.json({ ok: true });
 }));
 
+app.post('/api/offboarding/bulk-delete', requireAuth, wrap(async (req, res) => {
+  const ids = [...new Set((req.body?.ids || []).map(Number).filter(n => Number.isInteger(n) && n > 0))];
+  if (!ids.length) return res.json({ ok: true, count: 0 });
+  const ph = ids.map(() => '?').join(',');
+  const rows = await q(`SELECT id, name FROM offboarding WHERE id IN (${ph})`, ids);
+  await run(`DELETE FROM offboarding WHERE id IN (${ph})`, ids);
+  for (const r of rows) await logActivity({ userId: req.user.id, userName: req.user.name, action: '퇴사자 일괄삭제', targetType: 'offboarding', targetId: r.id, detail: r.name });
+  res.json({ ok: true, count: rows.length });
+}));
+
 /* ---------------- Calendar ---------------- */
 app.get('/api/calendar', requireAuth, wrap(async (req, res) => {
   await autoCompleteDueOnboarding(req.user);
   const { from, to } = req.query;
   const events = [];
-  const onb = await q(`SELECT id, name, join_date, category, state FROM onboarding WHERE join_date <> ''`);
+  const onb = await q(`SELECT id, name, join_date, category, state, tasks FROM onboarding WHERE join_date <> ''`);
   for (const o of onb) {
     if (from && o.join_date < from) continue;
     if (to && o.join_date > to) continue;
     events.push({ type: 'onboarding', id: o.id, date: o.join_date, title: o.name, category: o.category, state: o.state });
+  }
+  // 평가 예정일 — 평가서 회신일을 입력하면 일정에서 제외
+  for (const o of onb) {
+    const tasks = tasksObj(o.tasks);
+    if (tasks.pyeongga_hoesin) continue;
+    const evalDef = activeTasks(ONBOARDING_TASKS, o.category).find(t => t.key === 'pyeongga_yejeong');
+    if (!evalDef) continue;
+    const date = computeDate(evalDef.calc, o.join_date);
+    if (!date) continue;
+    if (from && date < from) continue;
+    if (to && date > to) continue;
+    events.push({ type: 'eval', id: o.id, date, title: o.name, category: o.category, state: o.state });
   }
   const ofb = await q(`SELECT id, name, leave_date, category, state FROM offboarding WHERE leave_date <> ''`);
   for (const o of ofb) {
@@ -333,12 +408,13 @@ app.get('/api/calendar', requireAuth, wrap(async (req, res) => {
 app.get('/api/dashboard', requireAuth, wrap(async (req, res) => {
   await autoCompleteDueOnboarding(req.user);
   const cnt = async (sql, p = []) => (await one(sql, p)).c;
-  res.json({
-    empActive: await cnt(`SELECT COUNT(*)::int c FROM employees WHERE status='재직'`),
-    empLeave: await cnt(`SELECT COUNT(*)::int c FROM employees WHERE status='휴직'`),
-    onbOpen: await cnt(`SELECT COUNT(*)::int c FROM onboarding WHERE state='진행중'`),
-    ofbOpen: await cnt(`SELECT COUNT(*)::int c FROM offboarding WHERE state='진행중'`),
-  });
+  const [empActive, empLeave, onbOpen, ofbOpen] = await Promise.all([
+    cnt(`SELECT COUNT(*)::int c FROM employees WHERE status='재직'`),
+    cnt(`SELECT COUNT(*)::int c FROM employees WHERE status='휴직'`),
+    cnt(`SELECT COUNT(*)::int c FROM onboarding WHERE state='진행중'`),
+    cnt(`SELECT COUNT(*)::int c FROM offboarding WHERE state='진행중'`),
+  ]);
+  res.json({ empActive, empLeave, onbOpen, ofbOpen });
 }));
 
 app.get('/api/activity', requireAuth, wrap(async (req, res) => {
