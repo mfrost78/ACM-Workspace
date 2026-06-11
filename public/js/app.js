@@ -219,12 +219,20 @@ function wireTopbar(root) { const b = $('#themeBtn', root); if (b) b.addEventLis
 async function viewDashboard(view) {
   view.innerHTML = topbar('대시보드') + `<div id="dashBody"><div class="empty">불러오는 중…</div></div>`;
   wireTopbar(view);
-  const [dashData, onb, ofb, acts] = await Promise.all([
-    api('GET', '/dashboard'),
-    api('GET', '/onboarding?state=진행중'),
-    api('GET', '/offboarding?state=진행중'),
-    api('GET', '/activity?limit=8'),
-  ]);
+  let dashData, onb, ofb, acts;
+  try {
+    [dashData, onb, ofb, acts] = await Promise.all([
+      api('GET', '/dashboard'),
+      api('GET', '/onboarding?state=진행중'),
+      api('GET', '/offboarding?state=진행중'),
+      api('GET', '/activity?limit=8'),
+    ]);
+  } catch (e) {
+    const body = $('#dashBody', view);
+    if (body) body.innerHTML = `<div class="empty"><div class="big">⚠️</div>데이터를 불러오지 못했습니다.<br><span class="t-muted">${esc(e.message)}</span><br><button class="btn btn-sm mt8" id="dashRetry">다시 시도</button></div>`;
+    const r = $('#dashRetry', view); if (r) r.addEventListener('click', () => viewDashboard(view));
+    return;
+  }
   dash = dashData;
   const upcoming = [...onb.map(o => ({ ...o, kind: 'in', date: o.join_date })),
                     ...ofb.map(o => ({ ...o, kind: 'out', date: o.leave_date }))]

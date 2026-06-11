@@ -89,8 +89,8 @@ hr-workspace/
 ├─ server.js              Express 앱 (API·정적·SPA fallback), 로컬에선 listen
 ├─ lib/
 │  ├─ db.js              Postgres 연결·쿼리 헬퍼 (pg / pg-mem)
-│  ├─ schema.sql         Postgres 스키마(DDL)
-│  ├─ migrate.js         스키마 생성 + 초기 데이터 시드
+│  ├─ schema.js          Postgres 스키마(멱등 DDL) — 콜드스타트 자동 적용
+│  ├─ migrate.js         스키마 적용(applySchema) + 초기 데이터 시드
 │  └─ auth.js            로그인·세션·비밀번호·로그인잠금
 ├─ seed/employees.json   재직자 초기 데이터(505명)
 └─ public/

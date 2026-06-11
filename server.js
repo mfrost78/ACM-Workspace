@@ -58,6 +58,19 @@ function clearSessionCookie(res) {
   res.setHeader('Set-Cookie', parts.join('; '));
 }
 
+// 콜드스타트 시 멱등 스키마를 1회 적용 — git push 배포만으로 신규 테이블/컬럼이 반영되도록.
+// (서버리스 인스턴스 수명당 1회, 첫 API 요청에서만 비용 발생)
+let _schemaReady = null;
+function ensureSchema() {
+  if (!_schemaReady) {
+    _schemaReady = import('./lib/migrate.js')
+      .then(m => m.applySchema())
+      .catch(e => { _schemaReady = null; throw e; });
+  }
+  return _schemaReady;
+}
+app.use('/api', (req, res, next) => { ensureSchema().then(() => next()).catch(next); });
+
 // async 핸들러 래퍼
 const wrap = (fn) => (req, res, next) => Promise.resolve(fn(req, res)).catch(next);
 
@@ -690,7 +703,7 @@ app.use((err, req, res, next) => {
 if (!ON_VERCEL && process.argv[1] && process.argv[1].endsWith('server.js')) {
   const boot = async () => {
     await getPool();
-    if (process.env.USE_PG_MEM === '1') { const { migrate } = await import('./lib/migrate.js'); await migrate(); }
+    if (process.env.USE_PG_MEM === '1') { const { migrate } = await import('./lib/migrate.js'); await migrate(); _schemaReady = Promise.resolve(); /* 부팅에서 적용 완료 → 콜드스타트 중복 실행 방지 */ }
     app.listen(PORT, () => {
       console.log(`\n  HR Workspace 실행 중  (${PROD ? 'production' : 'development'})`);
       console.log(`  ▶ 포트: ${PORT}  |  보안쿠키: ${COOKIE_SECURE ? 'ON' : 'off'}  |  DB: ${process.env.USE_PG_MEM === '1' ? 'pg-mem(테스트)' : 'Postgres'}`);
