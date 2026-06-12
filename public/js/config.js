@@ -163,5 +163,9 @@ export const TODO_STATUS_TONE = { '진행중': 'todo', '완료': 'done', '취소
 // 중요도 → 색상 톤(badge)
 export const PRIORITY_TONE = { '초비상': 'crit', '우선': 'high', '보통': 'mid', '여유': 'low' };
 
+// 정기(반복) 업무 주기
+export const RECUR_FREQ = [['weekly', '매주'], ['monthly', '매월'], ['yearly', '매년']];
+export const DOW_LABELS = ['일', '월', '화', '수', '목', '금', '토'];
+
 export const POSITIONS = ['사원', '주임', '대리', '과장', '차장', '부장', '이사대우', '이사', '상무', '전무', '부사장', '사장', '기술책임수석', '기술책임수석(STO)', '관리소장', '영선원', '미화원'];
 export const FIELDS = ['건축', '토목', '기계', '전기', '통신', '소방', '조경', '설계', '구조', '안전', '안전/환경', '사무', '재무', '총무', '마케팅', '운영사업'];

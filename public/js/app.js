@@ -3,7 +3,7 @@ import {
   activeTasks, computeDate, progress, defaultTasks, POSITIONS, FIELDS,
   under1Year, effectiveTasks,
   TODO_STATUS, TODO_PRIORITY, PROJECT_CATEGORIES, TASK_SUBCATEGORIES,
-  TODO_STATUS_TONE, PRIORITY_TONE,
+  TODO_STATUS_TONE, PRIORITY_TONE, RECUR_FREQ, DOW_LABELS,
 } from './config.js';
 
 /* ============ 유틸 ============ */
@@ -235,14 +235,68 @@ async function viewDashboard(view) {
                     ...ofb.map(o => ({ ...o, kind: 'out', date: o.leave_date }))]
     .filter(x => x.date).sort((a, b) => a.date.localeCompare(b.date)).slice(0, 8);
 
+  // 업무 미니 행 (마감 임박/지연 위젯 공용)
+  const taskMini = (t) => `
+    <div class="dash-task" data-opentask="${t.id}">
+      ${ddayBadge(t) || '<span class="dday">—</span>'}
+      <span class="dash-task-title">${recurMark(t)}${esc(t.title)}</span>
+      ${prioBadge(t.priority)}
+      <span class="t-muted">${t.assignee_name ? `<span class="udot" style="background:${esc(t.assignee_color || '#888')}"></span>${esc(t.assignee_name)}` : '미지정'}</span>
+      <span class="t-muted dash-task-date">~${esc(t.target_date)}</span>
+    </div>`;
+  const stats = dash.taskStats || [];
+  const maxOpen = Math.max(1, ...stats.map(s => s.open));
+  const feed = dash.taskFeed || [];
+
   $('#dashBody', view).innerHTML = `
     <div class="stat-grid">
       <div class="stat"><div class="label">재직 인원</div><div class="value">${dash.empActive ?? 0}<small> 명</small></div></div>
-      <div class="stat"><div class="label">휴직 인원</div><div class="value">${dash.empLeave ?? 0}<small> 명</small></div></div>
       <div class="stat"><div class="label">진행중 입사</div><div class="value" style="color:var(--green)">${dash.onbOpen ?? 0}<small> 건</small></div></div>
       <div class="stat"><div class="label">진행중 퇴사</div><div class="value" style="color:var(--red)">${dash.ofbOpen ?? 0}<small> 건</small></div></div>
+      <div class="stat" data-goroute="todo"><div class="label">진행중 업무</div><div class="value">${dash.taskOpen ?? 0}<small> 건</small></div></div>
+      <div class="stat" data-goroute="todo"><div class="label">지연 업무</div><div class="value" style="color:var(--red)">${dash.taskOverdue ?? 0}<small> 건</small></div></div>
+      <div class="stat" data-goroute="todo" data-mine="1"><div class="label">내 업무</div><div class="value" style="color:var(--accent)">${dash.myTaskOpen ?? 0}<small> 건</small></div></div>
     </div>
-    <div style="display:grid;grid-template-columns:1.4fr 1fr;gap:18px" class="dash-cols">
+    <div class="dash-cols dash-grid2">
+      <div class="card">
+        <div class="card-head"><h3>⚠️ 지연 업무</h3></div>
+        <div class="card-body dash-tasks">
+          ${(dash.overdueTasks || []).length ? dash.overdueTasks.map(taskMini).join('') : `<div class="empty" style="padding:24px">지연 업무가 없습니다 👍</div>`}
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-head"><h3>📅 마감 임박 (7일 이내)</h3></div>
+        <div class="card-body dash-tasks">
+          ${(dash.dueSoonTasks || []).length ? dash.dueSoonTasks.map(taskMini).join('') : `<div class="empty" style="padding:24px">임박한 마감이 없습니다.</div>`}
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-head"><h3>👥 팀 업무 현황</h3></div>
+        <div class="card-body dash-team">
+          ${stats.length ? stats.map(s => `
+            <div class="team-row" ${s.user_id ? `data-goasg="${s.user_id}"` : ''}>
+              <span class="team-name"><span class="udot" style="background:${esc(s.color)}"></span>${esc(s.name)}</span>
+              <div class="team-bar"><i style="width:${Math.round(s.open / maxOpen * 100)}%;background:${esc(s.color)}"></i></div>
+              <span class="team-cnt">${s.open}건${s.overdue ? ` · <b class="t-over">지연 ${s.overdue}</b>` : ''}${s.dueWeek ? ` · 주내 ${s.dueWeek}` : ''}</span>
+            </div>`).join('') : `<div class="empty" style="padding:24px">진행중 업무가 없습니다.</div>`}
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-head"><h3>💬 최근 업무 업데이트</h3></div>
+        <div class="card-body dash-feed">
+          ${feed.length ? feed.map(f => `
+            <div class="feed-item" data-opentask="${f.task_id}">
+              <span class="feed-ic">${f.kind === 'done' ? '✅' : '💬'}</span>
+              <div class="feed-main">
+                <div class="feed-title">${esc(f.title || '(삭제된 업무)')}</div>
+                <div class="feed-text t-muted">${esc(f.text)}</div>
+              </div>
+              <span class="t-muted feed-meta">${esc(f.who || '')}<br>${esc(fmtTs(f.at, false))}</span>
+            </div>`).join('') : `<div class="empty" style="padding:24px">최근 업데이트가 없습니다.</div>`}
+        </div>
+      </div>
+    </div>
+    <div class="dash-cols" style="display:grid;grid-template-columns:1.4fr 1fr;gap:18px;margin-top:18px">
       <div class="card">
         <div class="card-head"><h3>다가오는 입·퇴사 일정</h3></div>
         <div class="card-body">
@@ -273,7 +327,16 @@ async function viewDashboard(view) {
     const tr = e.target.closest('[data-go]');
     if (tr) { state.route = tr.dataset.go === 'in' ? 'onboarding' : 'offboarding'; render().then(() => {
       setTimeout(() => (tr.dataset.go === 'in' ? openOnboarding : openOffboarding)(Number(tr.dataset.id)), 50);
-    }); }
+    }); return; }
+    // 업무 클릭 → 업무 모달 (저장 시 대시보드 갱신)
+    const tk = e.target.closest('[data-opentask]');
+    if (tk) { openTaskModal(Number(tk.dataset.opentask), { onSaved: () => viewDashboard(view) }); return; }
+    // 팀 현황 담당자 클릭 → 업무 보드(해당 담당자 필터)
+    const asg = e.target.closest('[data-goasg]');
+    if (asg) { Object.assign(TODO, { status: '진행중', assignee: String(asg.dataset.goasg), mine: false }); state.route = 'todo'; render(); return; }
+    // 업무 stat 클릭 → 업무 보드
+    const st = e.target.closest('[data-goroute]');
+    if (st) { if (st.dataset.mine) Object.assign(TODO, { mine: true, assignee: '', status: '진행중' }); state.route = st.dataset.goroute; render(); }
   });
 }
 
@@ -793,6 +856,23 @@ const statusPill = (s) => `<span class="pill ${TODO_STATUS_TONE[s] || 'na'}">${e
 const prioBadge = (p) => `<span class="prio prio-${PRIORITY_TONE[p] || 'mid'}">${esc(p)}</span>`;
 const catBadge = (c) => `<span class="pill cat cat-${{ '인사': 'a', '총무': 'b', '기획': 'c', '기타': 'd' }[c] || 'd'}">${esc(c)}</span>`;
 const schedText = (r) => { const a = r.start_date || '', b = r.target_date || ''; return a && b ? `${a} ~ ${b}` : (a || b || '—'); };
+const recurMark = (r) => (r.recurring_rule_id ? `<span class="recur-mark" title="정기 업무">🔁</span>` : '');
+
+// D-day/지연 배지 — 진행중 + 목표일 있는 항목만
+function ddayBadge(r) {
+  if (r.status !== '진행중' || !r.target_date) return '';
+  const diff = Math.round((new Date(r.target_date + 'T00:00:00') - new Date(todayStr() + 'T00:00:00')) / 86400000);
+  if (diff < 0) return `<span class="dday dday-over">D+${-diff} 지연</span>`;
+  if (diff === 0) return `<span class="dday dday-today">D-DAY</span>`;
+  if (diff <= 7) return `<span class="dday dday-soon">D-${diff}</span>`;
+  return '';
+}
+
+// 인라인 상태 변경 select (행 클릭과 충돌하지 않게 클릭 전파 차단은 wire 단계에서)
+function inlineStatusSel(t) {
+  return `<select class="cell-select inline-st tone-${TODO_STATUS_TONE[t.status] || 'na'}" data-stid="${t.id}">
+    ${TODO_STATUS.map(s => `<option ${t.status === s ? 'selected' : ''}>${esc(s)}</option>`).join('')}</select>`;
+}
 
 function userOpts(selId) {
   return `<option value="">미지정</option>` + todoUsers.map(u =>
@@ -809,73 +889,129 @@ function projectOpts(sel) {
 
 async function viewTodo(view) {
   view.innerHTML = topbar('업무 보드',
-    `<button class="btn" id="addProj">＋ 프로젝트</button><button class="btn btn-primary" id="addTask">＋ 업무</button>`);
+    `<button class="btn" id="recurBtn">🔁 반복 업무</button><button class="btn" id="addProj">＋ 프로젝트</button><button class="btn btn-primary" id="addTask">＋ 업무</button>`);
   wireTopbar(view);
   const wrap = document.createElement('div'); view.appendChild(wrap);
 
+  const inArchive = () => TODO.status === 'archive';
   let projects = [], tasks = [];
   async function load() {
+    const arch = inArchive() ? '?archived=1' : '';
     [projects, tasks, todoUsers] = await Promise.all([
-      api('GET', '/projects'), api('GET', '/tasks'), getUsers(true),
+      api('GET', `/projects${arch}`), api('GET', `/tasks${arch}`), getUsers(true),
     ]);
-    todoProjects = projects;
+    if (!inArchive()) todoProjects = projects;
   }
 
   const taskOk = (t) =>
-    (TODO.status === 'all' || t.status === TODO.status) &&
+    (TODO.status === 'all' || inArchive() || t.status === TODO.status) &&
     (!TODO.category || t.category === TODO.category) &&
     (!TODO.assignee || String(t.assignee_id) === TODO.assignee) &&
     (!TODO.mine || t.assignee_id === state.user.id);
   const projOk = (p) =>
-    (TODO.status === 'all' || p.status === TODO.status) &&
+    (TODO.status === 'all' || inArchive() || p.status === TODO.status) &&
     (!TODO.category || p.category === TODO.category) &&
     (!TODO.assignee || String(p.assignee_id) === TODO.assignee) &&
     (!TODO.mine || p.assignee_id === state.user.id);
 
+  $('#recurBtn', view).addEventListener('click', () => openRecurringModal(refresh));
   $('#addProj', view).addEventListener('click', () => openProjectModal(null, refresh));
   $('#addTask', view).addEventListener('click', () => openTaskModal(null, { onSaved: refresh }));
   async function refresh() { await load(); draw(); }
 
   function toolbar(vTasks) {
     return `
+      ${inArchive() ? '' : `<div class="quick-add">
+        <span class="qa-ic">⚡</span>
+        <input class="input" id="qaTitle" placeholder="빠른 추가 — 제목 입력 후 Enter (구분·중요도는 나중에 수정 가능)">
+        <select class="select" id="qaAsg" style="width:auto">${userOpts(state.user.id)}</select>
+        <input class="input" id="qaDate" type="date" style="width:auto" title="목표일">
+        <button class="btn btn-sm btn-primary" id="qaBtn">추가</button>
+      </div>`}
       <div class="toolbar">
         <div class="seg" id="vSeg">
           ${[['list', '리스트'], ['kanban', '칸반'], ['rel', '관계도']].map(([v, l]) =>
             `<button data-v="${v}" class="${TODO.view === v ? 'on' : ''}">${l}</button>`).join('')}
         </div>
         <div class="seg" id="stSeg">
-          ${['진행중', '완료', '취소', 'all'].map(s => `<button data-st="${s}" class="${TODO.status === s ? 'on' : ''}">${s === 'all' ? '전체' : s}</button>`).join('')}
+          ${[['진행중', '진행중'], ['완료', '완료'], ['취소', '취소'], ['all', '전체'], ['archive', '📦 보관함']].map(([s, l]) =>
+            `<button data-st="${s}" class="${TODO.status === s ? 'on' : ''}">${l}</button>`).join('')}
         </div>
         <select class="select" id="fCat" style="width:auto"><option value="">구분 전체</option>${PROJECT_CATEGORIES.map(c => `<option ${TODO.category === c ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select>
         <select class="select" id="fAsg" style="width:auto"><option value="">담당 전체</option>${todoUsers.map(u => `<option value="${u.id}" ${TODO.assignee === String(u.id) ? 'selected' : ''}>${esc(u.name)}</option>`).join('')}</select>
         <label class="chk-inline"><input type="checkbox" id="fMine" ${TODO.mine ? 'checked' : ''}> 내 업무만</label>
         ${TODO.view === 'kanban' ? `<div class="seg" id="gbSeg">${[['status', '상태별'], ['assignee', '담당자별']].map(([g, l]) => `<button data-gb="${g}" class="${TODO.groupBy === g ? 'on' : ''}">${l}</button>`).join('')}</div>` : ''}
-        <div class="spacer"></div><span class="t-muted">업무 ${vTasks.length}건</span>
+        <div class="spacer"></div><span class="t-muted">${inArchive() ? '보관된 업무' : '업무'} ${vTasks.length}건</span>
       </div>`;
   }
 
   function draw() {
     const vTasks = tasks.filter(taskOk);
     let bodyHtml = '';
-    if (TODO.view === 'list') bodyHtml = renderList(projects, tasks, projOk, taskOk);
+    if (TODO.view === 'list') bodyHtml = renderList(projects, tasks, projOk, taskOk, inArchive());
     else if (TODO.view === 'kanban') bodyHtml = renderKanban(vTasks);
     else bodyHtml = renderRel(projects, tasks, projOk, taskOk);
     wrap.innerHTML = toolbar(vTasks) + bodyHtml;
 
     wrap.querySelector('#vSeg').addEventListener('click', e => { const b = e.target.closest('[data-v]'); if (b) { TODO.view = b.dataset.v; draw(); } });
-    wrap.querySelector('#stSeg').addEventListener('click', e => { const b = e.target.closest('[data-st]'); if (b) { TODO.status = b.dataset.st; draw(); } });
+    wrap.querySelector('#stSeg').addEventListener('click', async e => {
+      const b = e.target.closest('[data-st]'); if (!b) return;
+      const wasArch = inArchive(); TODO.status = b.dataset.st;
+      if (wasArch !== inArchive()) await load();   // 보관함 진입/이탈 시 재조회
+      draw();
+    });
     $('#fCat', wrap).addEventListener('change', e => { TODO.category = e.target.value; draw(); });
     $('#fAsg', wrap).addEventListener('change', e => { TODO.assignee = e.target.value; draw(); });
     $('#fMine', wrap).addEventListener('change', e => { TODO.mine = e.target.checked; draw(); });
     const gb = wrap.querySelector('#gbSeg'); if (gb) gb.addEventListener('click', e => { const b = e.target.closest('[data-gb]'); if (b) { TODO.groupBy = b.dataset.gb; draw(); } });
 
+    // 빠른 추가
+    const qa = $('#qaTitle', wrap);
+    if (qa) {
+      const submit = async () => {
+        const title = qa.value.trim(); if (!title) return;
+        try {
+          await api('POST', '/tasks', {
+            title, subcategory: '기타', priority: '보통',
+            assignee_id: $('#qaAsg', wrap).value || null,
+            start_date: todayStr(), target_date: $('#qaDate', wrap).value || '',
+          });
+          toast('업무가 추가되었습니다'); await refresh();
+        } catch (e) { toast(e.message, true); }
+      };
+      qa.addEventListener('keydown', e => { if (e.key === 'Enter') submit(); });
+      $('#qaBtn', wrap).addEventListener('click', submit);
+    }
+
     // 공통: 프로젝트/업무 클릭 → 모달
     wrap.querySelectorAll('[data-proj]').forEach(el => el.addEventListener('click', ev => {
-      if (ev.target.closest('[data-task]')) return; // 내부 업무 클릭은 제외
+      if (ev.target.closest('[data-task],[data-arch],[data-addtask]')) return; // 내부 컨트롤 클릭은 제외
       openProjectModal(Number(el.dataset.proj), refresh);
     }));
-    wrap.querySelectorAll('[data-task]').forEach(el => el.addEventListener('click', ev => { ev.stopPropagation(); openTaskModal(Number(el.dataset.task), { onSaved: refresh }); }));
+    wrap.querySelectorAll('[data-task]').forEach(el => el.addEventListener('click', ev => {
+      if (ev.target.closest('.inline-st,[data-arch]')) return;
+      ev.stopPropagation(); openTaskModal(Number(el.dataset.task), { onSaved: refresh });
+    }));
     wrap.querySelectorAll('[data-addtask]').forEach(el => el.addEventListener('click', ev => { ev.stopPropagation(); openTaskModal(null, { project_id: el.dataset.addtask, onSaved: refresh }); }));
+
+    // 인라인 상태 변경 (완료 전환 시 완료일은 서버가 자동 입력)
+    wrap.querySelectorAll('.inline-st').forEach(sel => {
+      sel.addEventListener('click', ev => ev.stopPropagation());
+      sel.addEventListener('change', async () => {
+        try { await api('PUT', `/tasks/${sel.dataset.stid}`, { status: sel.value }); await refresh(); }
+        catch (e) { toast(e.message, true); }
+      });
+    });
+
+    // 보관/복원
+    wrap.querySelectorAll('[data-arch]').forEach(b => b.addEventListener('click', async ev => {
+      ev.stopPropagation();
+      const [kind, id] = b.dataset.arch.split(':');
+      try {
+        await api('POST', `/${kind}/${id}/archive`, { on: !inArchive() });
+        toast(inArchive() ? '복원되었습니다' : '보관되었습니다'); await refresh();
+      } catch (e) { toast(e.message, true); }
+    }));
 
     if (TODO.view === 'kanban') wireKanbanDnD(wrap, refresh);
   }
@@ -885,47 +1021,55 @@ async function viewTodo(view) {
 }
 
 // ---- 리스트 뷰 ----
-function renderList(projects, tasks, projOk, taskOk) {
+// 보관/복원 버튼 — 일반 화면에선 완료/취소 항목에 '보관', 보관함에선 '복원'
+function archBtn(kind, r, arch) {
+  if (arch) return `<button class="btn btn-sm" data-arch="${kind}:${r.id}">복원</button>`;
+  if (r.status === '완료' || r.status === '취소') return `<button class="btn btn-sm btn-ghost" data-arch="${kind}:${r.id}" title="보관함으로 이동">📦</button>`;
+  return '';
+}
+function renderList(projects, tasks, projOk, taskOk, arch = false) {
   const byProj = {}; for (const t of tasks) (byProj[t.project_id ?? 0] ||= []).push(t);
   const blocks = [];
   for (const p of projects) {
     const vt = (byProj[p.id] || []).filter(taskOk);
     if (!projOk(p) && !vt.length) continue;
     const done = (byProj[p.id] || []).filter(t => t.status === '완료').length;
-    blocks.push(projBlock(p, vt, done, (byProj[p.id] || []).length));
+    blocks.push(projBlock(p, vt, done, (byProj[p.id] || []).length, arch));
   }
   // 프로젝트 미연결 업무
   const orphans = (byProj[0] || []).filter(taskOk);
   if (orphans.length) blocks.push(`
     <div class="proj-block">
       <div class="proj-head"><div class="proj-title">◇ (프로젝트 미연결 업무)</div></div>
-      <div class="task-rows">${orphans.map(taskRow).join('')}</div>
+      <div class="task-rows">${orphans.map(t => taskRow(t, arch)).join('')}</div>
     </div>`);
-  return `<div class="todo-list">${blocks.join('') || `<div class="empty"><div class="big">🗂️</div>표시할 업무가 없습니다.</div>`}</div>`;
+  return `<div class="todo-list">${blocks.join('') || `<div class="empty"><div class="big">${arch ? '📦' : '🗂️'}</div>${arch ? '보관된 업무가 없습니다.' : '표시할 업무가 없습니다.'}</div>`}</div>`;
 }
-function projBlock(p, vt, done, total) {
+function projBlock(p, vt, done, total, arch = false) {
   return `
     <div class="proj-block">
       <div class="proj-head" data-proj="${p.id}">
         <div class="proj-title">◆ ${esc(p.title)}</div>
-        ${catBadge(p.category)} ${prioBadge(p.priority)} ${statusPill(p.status)}
+        ${catBadge(p.category)} ${prioBadge(p.priority)} ${statusPill(p.status)} ${ddayBadge(p)}
         <span class="t-muted">${p.assignee_name ? esc(p.assignee_name) : '담당 미지정'} · ${esc(schedText(p))}</span>
         <span class="proj-prog t-muted">하위 ${done}/${total}</span>
         <div class="spacer"></div>
-        <button class="btn btn-sm" data-addtask="${p.id}">＋ 업무</button>
+        ${archBtn('projects', p, arch)}
+        ${arch ? '' : `<button class="btn btn-sm" data-addtask="${p.id}">＋ 업무</button>`}
       </div>
-      ${vt.length ? `<div class="task-rows">${vt.map(taskRow).join('')}</div>` : `<div class="task-empty t-muted">하위 업무 없음</div>`}
+      ${vt.length ? `<div class="task-rows">${vt.map(t => taskRow(t, arch)).join('')}</div>` : `<div class="task-empty t-muted">하위 업무 없음</div>`}
     </div>`;
 }
-function taskRow(t) {
+function taskRow(t, arch = false) {
   return `
     <div class="task-row" data-task="${t.id}">
-      <span class="task-name">● ${esc(t.title)}</span>
+      <span class="task-name">● ${recurMark(t)}${esc(t.title)}</span>
       <span class="pill sub">${esc(t.subcategory || t.category)}</span>
-      ${prioBadge(t.priority)} ${statusPill(t.status)}
+      ${prioBadge(t.priority)} ${arch ? statusPill(t.status) : inlineStatusSel(t)} ${ddayBadge(t)}
       <span class="t-muted asg">${t.assignee_name ? `<span class="udot" style="background:${esc(t.assignee_color || '#888')}"></span>${esc(t.assignee_name)}` : '미지정'}</span>
       <span class="t-muted">${esc(schedText(t))}</span>
       ${t.fu_count ? `<span class="fu-chip" title="진행상황 ${t.fu_count}건">💬 ${t.fu_count}</span>` : ''}
+      ${archBtn('tasks', t, arch)}
     </div>`;
 }
 
@@ -949,8 +1093,8 @@ function renderKanban(vTasks) {
 function kbCard(t) {
   return `
     <div class="kb-card prio-l-${PRIORITY_TONE[t.priority] || 'mid'}" draggable="true" data-task="${t.id}" data-id="${t.id}">
-      <div class="kb-card-top">${catBadge(t.category)} ${prioBadge(t.priority)}</div>
-      <div class="kb-card-title">${esc(t.title)}</div>
+      <div class="kb-card-top">${catBadge(t.category)} ${prioBadge(t.priority)} ${ddayBadge(t)}</div>
+      <div class="kb-card-title">${recurMark(t)}${esc(t.title)}</div>
       ${t.project_title ? `<div class="kb-card-proj">◆ ${esc(t.project_title)}</div>` : ''}
       <div class="kb-card-foot">
         <span class="asg">${t.assignee_name ? `<span class="udot" style="background:${esc(t.assignee_color || '#888')}"></span>${esc(t.assignee_name)}` : '미지정'}</span>
@@ -995,9 +1139,9 @@ function renderRel(projects, tasks, projOk, taskOk) {
         <div class="rel-tasks">
           ${vt.length ? vt.map(t => `
             <div class="rel-task prio-l-${PRIORITY_TONE[t.priority] || 'mid'}" data-task="${t.id}">
-              <span class="task-name">● ${esc(t.title)}</span>
+              <span class="task-name">● ${recurMark(t)}${esc(t.title)}</span>
               <span class="pill sub">${esc(t.subcategory || t.category)}</span>
-              ${statusPill(t.status)}
+              ${statusPill(t.status)} ${ddayBadge(t)}
               <span class="t-muted">${t.assignee_name ? esc(t.assignee_name) : '미지정'}</span>
             </div>`).join('') : `<div class="rel-task empty-task t-muted">하위 업무 없음</div>`}
         </div>
@@ -1131,6 +1275,118 @@ async function loadFollowups(taskId, root) {
   list.querySelectorAll('[data-fu]').forEach(b => b.addEventListener('click', async () => {
     try { await api('DELETE', `/followups/${b.dataset.fu}`); await loadFollowups(taskId, root); } catch (e) { toast(e.message, true); }
   }));
+}
+
+/* ---- 정기(반복) 업무 관리 모달 ---- */
+function recurDesc(r) {
+  if (r.freq === 'weekly') return `매주 ${DOW_LABELS[r.dow] ?? '?'}요일`;
+  if (r.freq === 'monthly') return `매월 ${r.dom}일`;
+  if (r.freq === 'yearly') return `매년 ${r.month}월 ${r.day}일`;
+  return r.freq;
+}
+async function openRecurringModal(onChanged) {
+  await getUsers(); todoUsers = _usersCache;
+  let rules = [];
+  let editId = null;   // 수정 중인 규칙 id (null이면 신규)
+
+  openModal(`
+    <div class="modal-head"><h3>🔁 반복(정기) 업무 관리</h3><button class="x" data-x>×</button></div>
+    <div class="modal-body">
+      <p class="t-muted" style="font-size:12.5px;margin-bottom:12px">등록한 주기에 맞춰 도래일 며칠 전에 업무가 자동 생성됩니다. (예: 매월 25일 급여 — 7일 전 등록)</p>
+      <div id="ruleList" class="rule-list"><div class="t-muted">불러오는 중…</div></div>
+      <div class="section-title" id="ruleFormTitle">새 반복 업무</div>
+      <form id="ruleForm" class="form-grid">
+        <div class="field"><label>주기 *</label><select class="select" name="freq" id="rFreq">
+          ${RECUR_FREQ.map(([v, l]) => `<option value="${v}">${l}</option>`).join('')}</select></div>
+        <div class="field" data-when="weekly"><label>요일 *</label><select class="select" name="dow">
+          ${DOW_LABELS.map((l, i) => `<option value="${i}" ${i === 1 ? 'selected' : ''}>${l}요일</option>`).join('')}</select></div>
+        <div class="field" data-when="monthly" style="display:none"><label>일자 *</label><input class="input" name="dom" type="number" min="1" max="31" value="25" placeholder="1~31 (말일은 31)"></div>
+        <div class="field contents" data-when="yearly" style="display:none">
+          <div class="field"><label>월 *</label><input class="input" name="month" type="number" min="1" max="12" value="1"></div>
+          <div class="field"><label>일 *</label><input class="input" name="day" type="number" min="1" max="31" value="1"></div>
+        </div>
+        <div class="field"><label>미리 등록(일)</label><input class="input" name="lead_days" type="number" min="0" max="60" value="7" title="도래일 며칠 전에 업무를 생성할지"></div>
+        <div class="field full"><label>제목 *</label><input class="input" name="title" placeholder="예: 급여 지급, 주간회의 준비"></div>
+        <div class="field full"><label>내용</label><input class="input" name="content"></div>
+        <div class="field"><label>구분 *</label><select class="select" name="subcategory">${subcatOpts('')}</select></div>
+        <div class="field"><label>중요도</label><select class="select" name="priority">${TODO_PRIORITY.map(p => `<option ${p === '보통' ? 'selected' : ''}>${esc(p)}</option>`).join('')}</select></div>
+        <div class="field"><label>담당자</label><select class="select" name="assignee_id">${userOpts('')}</select></div>
+      </form>
+    </div>
+    <div class="modal-foot">
+      <button class="btn" id="ruleCancel" style="display:none">수정 취소</button><div class="spacer"></div>
+      <button class="btn" data-x>닫기</button><button class="btn btn-primary" id="ruleSave">규칙 추가</button>
+    </div>`, 'lg');
+  const root = $('#modal-root');
+  root.querySelectorAll('[data-x]').forEach(b => b.addEventListener('click', () => { closeModal(); onChanged && onChanged(); }));
+  const form = $('#ruleForm', root);
+
+  // 주기 선택에 따라 입력 필드 전환
+  function syncFreqFields() {
+    const f = $('#rFreq', root).value;
+    root.querySelectorAll('[data-when]').forEach(el => { el.style.display = el.dataset.when === f ? '' : 'none'; });
+  }
+  $('#rFreq', root).addEventListener('change', syncFreqFields);
+
+  function fillForm(r) {
+    editId = r ? r.id : null;
+    $('#ruleFormTitle', root).textContent = r ? `규칙 수정 — ${r.title}` : '새 반복 업무';
+    $('#ruleSave', root).textContent = r ? '저장' : '규칙 추가';
+    $('#ruleCancel', root).style.display = r ? '' : 'none';
+    form.freq.value = r?.freq || 'weekly';
+    form.dow.value = r?.dow ?? 1;
+    form.dom.value = r?.dom ?? 25;
+    form.month.value = r?.month ?? 1;
+    form.day.value = r?.day ?? 1;
+    form.lead_days.value = r?.lead_days ?? 7;
+    form.title.value = r?.title || '';
+    form.content.value = r?.content || '';
+    form.subcategory.value = r?.subcategory || '';
+    form.priority.value = r?.priority || '보통';
+    form.assignee_id.value = r?.assignee_id ?? '';
+    syncFreqFields();
+  }
+  $('#ruleCancel', root).addEventListener('click', () => fillForm(null));
+
+  async function drawRules() {
+    rules = await api('GET', '/recurring');
+    const list = $('#ruleList', root);
+    list.innerHTML = rules.length ? rules.map(r => `
+      <div class="rule-item ${r.active ? '' : 'off'}">
+        <span class="rule-cycle">${esc(recurDesc(r))}</span>
+        <span class="rule-title">${esc(r.title)}</span>
+        <span class="pill sub">${esc(r.subcategory || '')}</span>
+        <span class="t-muted">${r.assignee_name ? esc(r.assignee_name) : '미지정'} · ${r.lead_days}일 전 등록</span>
+        <div class="spacer"></div>
+        <button class="btn btn-sm" data-rtoggle="${r.id}">${r.active ? '중지' : '재개'}</button>
+        <button class="btn btn-sm" data-redit="${r.id}">수정</button>
+        <button class="btn btn-sm btn-danger" data-rdel="${r.id}">삭제</button>
+      </div>`).join('') : `<div class="t-muted" style="padding:8px 0 14px">등록된 반복 업무가 없습니다.</div>`;
+    list.querySelectorAll('[data-redit]').forEach(b => b.addEventListener('click', () => fillForm(rules.find(r => Number(r.id) === Number(b.dataset.redit)))));
+    list.querySelectorAll('[data-rtoggle]').forEach(b => b.addEventListener('click', async () => {
+      const r = rules.find(x => Number(x.id) === Number(b.dataset.rtoggle));
+      try { await api('PUT', `/recurring/${r.id}`, { active: r.active ? 0 : 1 }); await drawRules(); } catch (e) { toast(e.message, true); }
+    }));
+    list.querySelectorAll('[data-rdel]').forEach(b => b.addEventListener('click', async () => {
+      const r = rules.find(x => Number(x.id) === Number(b.dataset.rdel));
+      if (!confirm(`'${r.title}' 반복 규칙을 삭제할까요?\n이미 생성된 업무는 유지됩니다.`)) return;
+      try { await api('DELETE', `/recurring/${r.id}`); if (editId === r.id) fillForm(null); await drawRules(); } catch (e) { toast(e.message, true); }
+    }));
+  }
+
+  $('#ruleSave', root).addEventListener('click', async () => {
+    const body = Object.fromEntries(new FormData(form).entries());
+    if (!body.title.trim()) return toast('제목은 필수입니다', true);
+    if (!body.subcategory) return toast('구분을 선택하세요', true);
+    try {
+      if (editId) await api('PUT', `/recurring/${editId}`, body);
+      else await api('POST', '/recurring', body);
+      toast('저장되었습니다'); fillForm(null); await drawRules();
+    } catch (e) { toast(e.message, true); }
+  });
+
+  syncFreqFields();
+  await drawRules();
 }
 
 /* ============ 재직자 현황 ============ */

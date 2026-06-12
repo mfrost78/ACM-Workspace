@@ -350,6 +350,65 @@ table.xls-tbl .cell-select.tone-na   { background-color: var(--tone-na-bg);   co
 /* 담당자 색상 점 */
 .udot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-right: 4px; vertical-align: middle; }
 .fu-chip { font-size: 11px; color: var(--text-3); white-space: nowrap; }
+.recur-mark { font-size: 11px; margin-right: 3px; }
+
+/* D-day/지연 배지 */
+.dday { display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 6px; font-size: 11px; font-weight: 700; white-space: nowrap; color: var(--text-3); }
+.dday-over { background: rgba(255,59,48,.16); color: #d6342a; }
+.dday-soon { background: rgba(255,149,0,.18); color: #b15c00; }
+.dday-today { background: var(--red); color: #fff; }
+
+/* 빠른 추가 바 */
+.quick-add { display: flex; align-items: center; gap: 8px; margin-bottom: 14px; padding: 10px 12px;
+  background: var(--bg-elevated); border: 1px dashed var(--border); border-radius: 12px; }
+.quick-add .qa-ic { font-size: 15px; }
+.quick-add #qaTitle { flex: 1; }
+
+/* 인라인 상태 변경 (업무 리스트) */
+.inline-st { width: auto; min-width: 76px; padding: 4px 24px 4px 8px; font-size: 12px; font-weight: 600;
+  border-radius: 7px; background: var(--surface-2); border: 1px solid var(--border); background-position: right 7px center; }
+.inline-st.tone-done { background-color: var(--tone-done-bg); color: var(--tone-done-fg); border-color: transparent; }
+.inline-st.tone-todo { background-color: var(--tone-todo-bg); color: var(--tone-todo-fg); border-color: transparent; }
+.inline-st.tone-na   { background-color: var(--tone-na-bg);   color: var(--tone-na-fg);   border-color: transparent; }
+
+/* 반복 업무 규칙 목록 */
+.rule-list { display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; }
+.rule-item { display: flex; align-items: center; gap: 8px; padding: 9px 12px; background: var(--surface-2);
+  border-radius: 10px; font-size: 13px; flex-wrap: wrap; }
+.rule-item.off { opacity: .5; }
+.rule-cycle { font-weight: 700; color: var(--accent); white-space: nowrap; font-size: 12.5px; }
+.rule-title { font-weight: 600; }
+
+/* 대시보드 업무 위젯 */
+.dash-grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+.dash-tasks { padding: 6px 10px; }
+.dash-task { display: flex; align-items: center; gap: 8px; padding: 8px 8px; border-bottom: 1px solid var(--border);
+  font-size: 13px; cursor: pointer; border-radius: 8px; }
+.dash-task:last-child { border-bottom: none; }
+.dash-task:hover { background: var(--bg-hover); }
+.dash-task-title { font-weight: 600; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dash-task-date { font-size: 12px; font-variant-numeric: tabular-nums; }
+.dash-team { padding: 10px 16px; }
+.team-row { display: flex; align-items: center; gap: 10px; padding: 7px 4px; font-size: 13px; border-radius: 8px; }
+.team-row[data-goasg] { cursor: pointer; }
+.team-row[data-goasg]:hover { background: var(--bg-hover); }
+.team-name { width: 90px; font-weight: 600; flex-shrink: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.team-bar { flex: 1; height: 10px; background: var(--surface-2); border-radius: 6px; overflow: hidden; }
+.team-bar i { display: block; height: 100%; border-radius: 6px; transition: width .3s; }
+.team-cnt { font-size: 12px; color: var(--text-2); white-space: nowrap; }
+.t-over { color: var(--red); }
+.dash-feed { padding: 6px 10px; }
+.feed-item { display: flex; align-items: flex-start; gap: 9px; padding: 9px 8px; border-bottom: 1px solid var(--border);
+  font-size: 13px; cursor: pointer; border-radius: 8px; }
+.feed-item:last-child { border-bottom: none; }
+.feed-item:hover { background: var(--bg-hover); }
+.feed-ic { font-size: 14px; }
+.feed-main { flex: 1; min-width: 0; }
+.feed-title { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.feed-text { font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.feed-meta { font-size: 11px; text-align: right; flex-shrink: 0; line-height: 1.5; }
+.stat[data-goroute] { cursor: pointer; transition: border-color .15s; }
+.stat[data-goroute]:hover { border-color: var(--accent); }
 
 /* 리스트 뷰 */
 .todo-list { display: flex; flex-direction: column; gap: 14px; }
@@ -427,4 +486,6 @@ table.xls-tbl .cell-select.tone-na   { background-color: var(--tone-na-bg);   co
   .rel-row { flex-direction: column; }
   .rel-proj { flex-basis: auto; }
   .rel-conn { display: none; }
+  .dash-grid2 { grid-template-columns: 1fr; }
+  .quick-add { flex-wrap: wrap; }
 }

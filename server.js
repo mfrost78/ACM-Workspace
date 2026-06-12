@@ -135,6 +135,100 @@ async function syncCompletionStates(table, defs, isOff) {
   }
 }
 
+/* ---------------- 정기(반복) 업무 / 아카이브 헬퍼 ---------------- */
+// 'YYYY-MM-DD' 문자열 ± n일
+function addDays(dateStr, n) {
+  const d = new Date(dateStr + 'T00:00:00Z');
+  d.setUTCDate(d.getUTCDate() + n);
+  return d.toISOString().slice(0, 10);
+}
+// timestamptz → KST 'YYYY-MM-DD'
+function tsToDateStr(ts) {
+  return new Date(new Date(ts).getTime() + 9 * 3600 * 1000).toISOString().slice(0, 10);
+}
+
+// 규칙 기준 after(미포함) 이후 첫 도래일. monthly는 말일 클램프(예: 매월 31일 → 2월은 28/29일)
+function nextDue(rule, afterStr) {
+  const d = new Date(afterStr + 'T00:00:00Z');
+  if (rule.freq === 'weekly') {
+    const want = Number(rule.dow);
+    if (!(want >= 0 && want <= 6)) return null;
+    do { d.setUTCDate(d.getUTCDate() + 1); } while (d.getUTCDay() !== want);
+    return d.toISOString().slice(0, 10);
+  }
+  if (rule.freq === 'monthly') {
+    const dom = Number(rule.dom);
+    if (!(dom >= 1 && dom <= 31)) return null;
+    let y = d.getUTCFullYear(), m = d.getUTCMonth();
+    for (let i = 0; i < 3; i++) {
+      const last = new Date(Date.UTC(y, m + 1, 0)).getUTCDate();
+      const cand = new Date(Date.UTC(y, m, Math.min(dom, last))).toISOString().slice(0, 10);
+      if (cand > afterStr) return cand;
+      m++; if (m > 11) { m = 0; y++; }
+    }
+    return null;
+  }
+  if (rule.freq === 'yearly') {
+    const mm = Number(rule.month), dd = Number(rule.day);
+    if (!(mm >= 1 && mm <= 12 && dd >= 1 && dd <= 31)) return null;
+    let y = d.getUTCFullYear();
+    for (let i = 0; i < 3; i++) {
+      const last = new Date(Date.UTC(y, mm, 0)).getUTCDate();
+      const cand = new Date(Date.UTC(y, mm - 1, Math.min(dd, last))).toISOString().slice(0, 10);
+      if (cand > afterStr) return cand;
+      y++;
+    }
+    return null;
+  }
+  return null;
+}
+
+// fromExclusive < due <= toInclusive 범위의 도래일 목록 (장기 미접속 후 폭주 방지 위해 최대 8건)
+function dueDatesBetween(rule, fromExclusive, toInclusive) {
+  const out = [];
+  let cur = fromExclusive;
+  while (out.length < 8) {
+    const next = nextDue(rule, cur);
+    if (!next || next > toInclusive) break;
+    out.push(next); cur = next;
+  }
+  return out;
+}
+
+// 활성 규칙의 도래분(lead_days 이내)을 업무 인스턴스로 생성.
+// 서버리스 cron이 없으므로 업무/대시보드/캘린더 조회 시 lazy 실행.
+// 동시성: last_generated 선점 UPDATE 가 성공한 인스턴스만 INSERT (중복 생성 방지)
+async function generateRecurringTasks() {
+  const today = kstTodayStr();
+  const rules = await q(`SELECT * FROM recurring_rules WHERE active = 1`);
+  for (const r of rules) {
+    const limit = addDays(today, Number(r.lead_days) || 0);
+    // 신규 규칙은 오늘 이후 도래분만 생성 (과거 소급 방지). 기존 규칙은 누락분도 생성 → 지연으로 표시되어 미스 방지
+    const from = r.last_generated || addDays(today, -1);
+    const dues = dueDatesBetween(r, from, limit);
+    if (!dues.length) continue;
+    const claimed = await run(
+      `UPDATE recurring_rules SET last_generated = ? WHERE id = ? AND (last_generated IS NULL OR last_generated < ?)`,
+      [dues[dues.length - 1], r.id, dues[dues.length - 1]]);
+    if (!claimed.rowCount) continue;
+    for (const due of dues) {
+      await run(
+        `INSERT INTO tasks (project_id, category, subcategory, priority, title, content, start_date, target_date, done_date, status, assignee_id, recurring_rule_id, created_by)
+         VALUES (NULL, ?, ?, ?, ?, ?, ?, ?, '', '진행중', ?, ?, ?)`,
+        [r.category, r.subcategory || '', r.priority, r.title, r.content || '', today, due, r.assignee_id, r.id, r.created_by]);
+    }
+  }
+}
+
+// 아카이브 판정: 수동 보관(archived_at) 또는 완료/취소 후 7일 경과
+const ARCHIVE_DAYS = 7;
+function isArchivedRow(r, today) {
+  if (r.archived_at) return true;
+  if (r.status !== '완료' && r.status !== '취소') return false;
+  const base = r.done_date || (r.updated_at ? tsToDateStr(r.updated_at) : '');
+  return !!base && addDays(base, ARCHIVE_DAYS) < today;
+}
+
 /* ---------------- Auth ---------------- */
 app.post('/api/auth/login', wrap(async (req, res) => {
   const { username, password } = req.body || {};
@@ -475,28 +569,32 @@ app.get('/api/calendar', requireAuth, wrap(async (req, res) => {
     events.push({ type: 'offboarding', id: o.id, date: o.leave_date, title: o.name, category: o.category, state: o.state });
   }
 
-  // 업무(프로젝트/하위업무) 목표일 — 취소 제외, mine=1이면 본인 담당만
+  // 업무(프로젝트/하위업무) 목표일 — 취소·아카이브 제외, mine=1이면 본인 담당만
+  await generateRecurringTasks();
+  const today = kstTodayStr();
   const mine = req.query.mine === '1';
   const mineP = mine ? [req.user.id] : [];
   const mineSqlP = mine ? `AND p.assignee_id = ?` : '';
   const projs = await q(
-    `SELECT p.id, p.title, p.target_date, p.category, p.status, p.assignee_id, u.name AS assignee, u.color AS assignee_color
+    `SELECT p.id, p.title, p.target_date, p.category, p.status, p.done_date, p.archived_at, p.updated_at, p.assignee_id, u.name AS assignee, u.color AS assignee_color
        FROM projects p LEFT JOIN users u ON u.id = p.assignee_id
       WHERE p.target_date <> '' AND p.status <> '취소' ${mineSqlP}`, mineP);
   for (const p of projs) {
+    if (isArchivedRow(p, today)) continue;
     if (from && p.target_date < from) continue;
     if (to && p.target_date > to) continue;
     events.push({ type: 'project', id: p.id, date: p.target_date, title: p.title, category: p.category, state: p.status, assignee: p.assignee, assignee_color: p.assignee_color });
   }
   const mineSqlT = mine ? `AND t.assignee_id = ?` : '';
   const tks = await q(
-    `SELECT t.id, t.project_id, t.title, t.target_date, t.category, t.status, t.assignee_id, u.name AS assignee, u.color AS assignee_color
+    `SELECT t.id, t.project_id, t.title, t.target_date, t.category, t.status, t.done_date, t.archived_at, t.updated_at, t.recurring_rule_id, t.assignee_id, u.name AS assignee, u.color AS assignee_color
        FROM tasks t LEFT JOIN users u ON u.id = t.assignee_id
       WHERE t.target_date <> '' AND t.status <> '취소' ${mineSqlT}`, mineP);
   for (const t of tks) {
+    if (isArchivedRow(t, today)) continue;
     if (from && t.target_date < from) continue;
     if (to && t.target_date > to) continue;
-    events.push({ type: 'task', id: t.id, project_id: t.project_id, date: t.target_date, title: t.title, category: t.category, state: t.status, assignee: t.assignee, assignee_color: t.assignee_color });
+    events.push({ type: 'task', id: t.id, project_id: t.project_id, date: t.target_date, title: t.title, category: t.category, state: t.status, assignee: t.assignee, assignee_color: t.assignee_color, recurring: !!t.recurring_rule_id });
   }
   res.json(events);
 }));
@@ -504,16 +602,58 @@ app.get('/api/calendar', requireAuth, wrap(async (req, res) => {
 /* ---------------- Dashboard / Activity ---------------- */
 app.get('/api/dashboard', requireAuth, wrap(async (req, res) => {
   bg(autoCompleteDueOnboarding(req.user));
+  await generateRecurringTasks();
+  const today = kstTodayStr(), weekEnd = addDays(today, 7);
   const cnt = async (sql, p = []) => (await one(sql, p)).c;
-  const [empActive, empLeave, onbOpen, ofbOpen, taskOpen, myTaskOpen] = await Promise.all([
+  const [empActive, empLeave, onbOpen, ofbOpen] = await Promise.all([
     cnt(`SELECT COUNT(*)::int c FROM employees WHERE status='재직'`),
     cnt(`SELECT COUNT(*)::int c FROM employees WHERE status='휴직'`),
     cnt(`SELECT COUNT(*)::int c FROM onboarding WHERE state='진행중'`),
     cnt(`SELECT COUNT(*)::int c FROM offboarding WHERE state='진행중'`),
-    cnt(`SELECT COUNT(*)::int c FROM tasks WHERE status='진행중'`),
-    cnt(`SELECT COUNT(*)::int c FROM tasks WHERE status='진행중' AND assignee_id = ?`, [req.user.id]),
   ]);
-  res.json({ empActive, empLeave, onbOpen, ofbOpen, taskOpen, myTaskOpen });
+
+  // 진행중 업무 전체를 한 번에 가져와 JS 집계 (pg-mem 호환 + 담당자별/지연/임박 동시 계산)
+  const open = await q(
+    `SELECT t.id, t.title, t.target_date, t.priority, t.category, t.subcategory, t.status, t.assignee_id, t.recurring_rule_id,
+            u.name AS assignee_name, u.color AS assignee_color
+       FROM tasks t LEFT JOIN users u ON u.id = t.assignee_id
+      WHERE t.status = '진행중'`);
+  const taskOpen = open.length;
+  const myTaskOpen = open.filter(t => t.assignee_id === req.user.id).length;
+
+  const users = await q(`SELECT id, name, color FROM users ORDER BY id`);
+  const smap = {};
+  for (const u of users) smap[u.id] = { user_id: u.id, name: u.name, color: u.color, open: 0, overdue: 0, dueWeek: 0 };
+  const unassigned = { user_id: null, name: '미지정', color: '#8e8e93', open: 0, overdue: 0, dueWeek: 0 };
+  for (const t of open) {
+    const s = smap[t.assignee_id] || unassigned;
+    s.open++;
+    if (t.target_date && t.target_date < today) s.overdue++;
+    else if (t.target_date && t.target_date <= weekEnd) s.dueWeek++;
+  }
+  const taskStats = [...users.map(u => smap[u.id]), unassigned].filter(s => s.open > 0);
+
+  const overdueTasks = open.filter(t => t.target_date && t.target_date < today)
+    .sort((a, b) => a.target_date.localeCompare(b.target_date)).slice(0, 8);
+  const dueSoonTasks = open.filter(t => t.target_date && t.target_date >= today && t.target_date <= weekEnd)
+    .sort((a, b) => a.target_date.localeCompare(b.target_date)).slice(0, 8);
+  const taskOverdue = open.filter(t => t.target_date && t.target_date < today).length;
+
+  // 최근 업무 업데이트 피드: F/U + 최근 완료 업무
+  const fus = await q(
+    `SELECT f.id, f.task_id, f.content, f.created_at, t.title AS task_title, u.name AS author
+       FROM task_followups f LEFT JOIN tasks t ON t.id = f.task_id LEFT JOIN users u ON u.id = f.created_by
+      ORDER BY f.id DESC LIMIT 8`);
+  const dones = await q(
+    `SELECT t.id, t.title, t.updated_at, u.name AS assignee_name
+       FROM tasks t LEFT JOIN users u ON u.id = t.assignee_id
+      WHERE t.status = '완료' ORDER BY t.updated_at DESC LIMIT 8`);
+  const taskFeed = [
+    ...fus.map(f => ({ kind: 'fu', task_id: f.task_id, title: f.task_title, text: f.content, who: f.author, at: f.created_at })),
+    ...dones.map(d => ({ kind: 'done', task_id: d.id, title: d.title, text: '업무 완료', who: d.assignee_name, at: d.updated_at })),
+  ].sort((a, b) => new Date(b.at) - new Date(a.at)).slice(0, 8);
+
+  res.json({ empActive, empLeave, onbOpen, ofbOpen, taskOpen, myTaskOpen, taskOverdue, taskStats, overdueTasks, dueSoonTasks, taskFeed });
 }));
 
 app.get('/api/activity', requireAuth, wrap(async (req, res) => {
@@ -545,11 +685,15 @@ app.get('/api/projects', requireAuth, wrap(async (req, res) => {
   if (status) { where.push('p.status = ?'); params.push(status); }
   if (category) { where.push('p.category = ?'); params.push(category); }
   if (mine) { where.push('p.assignee_id = ?'); params.push(req.user.id); }
-  const rows = await q(`
+  let rows = await q(`
     SELECT p.*, u.name AS assignee_name, u.color AS assignee_color
       FROM projects p LEFT JOIN users u ON u.id = p.assignee_id
       ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
       ORDER BY p.id DESC`, params);
+  // 아카이브 분리: 기본은 제외, ?archived=1 이면 아카이브만
+  const showArchived = req.query.archived === '1';
+  const today = kstTodayStr();
+  rows = rows.filter(r => isArchivedRow(r, today) === showArchived);
   // 하위업무 건수/완료 집계 병합 (scalar 서브쿼리 회피 — pg-mem 호환)
   const counts = await q(`SELECT project_id, COUNT(*)::int AS total,
                                  SUM(CASE WHEN status='완료' THEN 1 ELSE 0 END)::int AS done
@@ -582,6 +726,8 @@ app.put('/api/projects/:id', requireAuth, wrap(async (req, res) => {
   const err = validTodo(b); if (err) return res.status(400).json({ error: err });
   const next = {};
   for (const f of PROJ_FIELDS) next[f] = f in b ? (f === 'assignee_id' ? normAssignee(b.assignee_id) : b[f]) : cur[f];
+  // 완료로 전환 시 완료일 자동 입력 (아카이브 자동 판정 기준)
+  if (next.status === '완료' && cur.status !== '완료' && !next.done_date) next.done_date = kstTodayStr();
   await run(`UPDATE projects SET ${PROJ_FIELDS.map(f => `${f}=?`).join(',')}, updated_at=now() WHERE id=?`,
     [...PROJ_FIELDS.map(f => next[f]), id]);
   await logActivity({ userId: req.user.id, userName: req.user.name, action: '프로젝트 수정', targetType: 'project', targetId: id, detail: next.title });
@@ -598,6 +744,7 @@ app.delete('/api/projects/:id', requireAuth, wrap(async (req, res) => {
 
 /* --- Tasks (하위업무) --- */
 app.get('/api/tasks', requireAuth, wrap(async (req, res) => {
+  await generateRecurringTasks();   // 정기 업무 도래분 lazy 생성
   const { status, category, project_id } = req.query;
   const mine = req.query.mine === '1';
   const where = [], params = [];
@@ -605,13 +752,17 @@ app.get('/api/tasks', requireAuth, wrap(async (req, res) => {
   if (category) { where.push('t.category = ?'); params.push(category); }
   if (project_id) { where.push('t.project_id = ?'); params.push(Number(project_id)); }
   if (mine) { where.push('t.assignee_id = ?'); params.push(req.user.id); }
-  const rows = await q(`
+  let rows = await q(`
     SELECT t.*, u.name AS assignee_name, u.color AS assignee_color, p.title AS project_title
       FROM tasks t
       LEFT JOIN users u ON u.id = t.assignee_id
       LEFT JOIN projects p ON p.id = t.project_id
       ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
       ORDER BY t.id DESC`, params);
+  // 아카이브 분리: 기본은 제외, ?archived=1 이면 아카이브만
+  const showArchived = req.query.archived === '1';
+  const today = kstTodayStr();
+  rows = rows.filter(r => isArchivedRow(r, today) === showArchived);
   // F/U 건수 집계 병합
   const counts = await q(`SELECT task_id, COUNT(*)::int AS c FROM task_followups GROUP BY task_id`);
   const cmap = {}; for (const c of counts) cmap[c.task_id] = c.c;
@@ -647,6 +798,8 @@ app.put('/api/tasks/:id', requireAuth, wrap(async (req, res) => {
   for (const f of TASK_FIELDS) next[f] = f in b
     ? (f === 'assignee_id' ? normAssignee(b.assignee_id) : f === 'project_id' ? (b.project_id ? Number(b.project_id) : null) : b[f])
     : cur[f];
+  // 완료로 전환 시 완료일 자동 입력 (아카이브 자동 판정 기준)
+  if (next.status === '완료' && cur.status !== '완료' && !next.done_date) next.done_date = kstTodayStr();
   await run(`UPDATE tasks SET ${TASK_FIELDS.map(f => `${f}=?`).join(',')}, updated_at=now() WHERE id=?`,
     [...TASK_FIELDS.map(f => next[f]), id]);
   await logActivity({ userId: req.user.id, userName: req.user.name, action: '업무 수정', targetType: 'task', targetId: id, detail: next.title });
@@ -685,6 +838,81 @@ app.post('/api/tasks/:id/followups', requireAuth, wrap(async (req, res) => {
 app.delete('/api/followups/:id', requireAuth, wrap(async (req, res) => {
   const id = Number(req.params.id);
   await run('DELETE FROM task_followups WHERE id = ?', [id]);
+  res.json({ ok: true });
+}));
+
+/* --- 보관(아카이브) / 복원 --- */
+for (const table of ['tasks', 'projects']) {
+  const targetType = table === 'tasks' ? 'task' : 'project';
+  app.post(`/api/${table}/:id/archive`, requireAuth, wrap(async (req, res) => {
+    const id = Number(req.params.id);
+    const on = !!(req.body || {}).on;
+    const row = await one(`SELECT id, title FROM ${table} WHERE id = ?`, [id]);
+    if (!row) return res.status(404).json({ error: '없음' });
+    await run(`UPDATE ${table} SET archived_at = ?, updated_at = now() WHERE id = ?`, [on ? kstTodayStr() : null, id]);
+    await logActivity({ userId: req.user.id, userName: req.user.name, action: on ? '업무 보관' : '업무 복원', targetType, targetId: id, detail: row.title });
+    res.json({ ok: true });
+  }));
+}
+
+/* --- 정기(반복) 업무 규칙 --- */
+const RECUR_FREQ_SET = new Set(['weekly', 'monthly', 'yearly']);
+function validRecur(b) {
+  if (!RECUR_FREQ_SET.has(b.freq)) return '반복 주기가 올바르지 않습니다.';
+  if (b.freq === 'weekly' && !(b.dow >= 0 && b.dow <= 6)) return '요일을 선택하세요.';
+  if (b.freq === 'monthly' && !(b.dom >= 1 && b.dom <= 31)) return '일자(1~31)를 확인하세요.';
+  if (b.freq === 'yearly' && !(b.month >= 1 && b.month <= 12 && b.day >= 1 && b.day <= 31)) return '월·일을 확인하세요.';
+  if (!b.title) return '제목은 필수입니다.';
+  if (!ALL_SUBCATS.has(b.subcategory)) return '업무 구분 값이 올바르지 않습니다.';
+  if (b.priority && !PRIORITY_SET.has(b.priority)) return '중요도 값이 올바르지 않습니다.';
+  if (!(b.lead_days >= 0 && b.lead_days <= 60)) return '미리 등록 일수(0~60)를 확인하세요.';
+  return null;
+}
+function normRecur(b) {
+  for (const k of ['dow', 'dom', 'month', 'day', 'lead_days']) b[k] = (b[k] === '' || b[k] === undefined || b[k] === null) ? null : Number(b[k]);
+  if (b.lead_days === null) b.lead_days = 7;
+  b.priority = b.priority || '보통';
+  b.category = SUBCAT_GROUP[b.subcategory];
+  return b;
+}
+
+app.get('/api/recurring', requireAuth, wrap(async (req, res) => {
+  res.json(await q(
+    `SELECT r.*, u.name AS assignee_name, u.color AS assignee_color
+       FROM recurring_rules r LEFT JOIN users u ON u.id = r.assignee_id
+      ORDER BY r.id DESC`));
+}));
+
+const RECUR_FIELDS = ['freq', 'dow', 'dom', 'month', 'day', 'lead_days', 'title', 'content', 'category', 'subcategory', 'priority', 'assignee_id', 'active'];
+app.post('/api/recurring', requireAuth, wrap(async (req, res) => {
+  const b = normRecur(req.body || {});
+  const err = validRecur(b); if (err) return res.status(400).json({ error: err });
+  const vals = RECUR_FIELDS.map(f => f === 'assignee_id' ? normAssignee(b.assignee_id)
+    : f === 'active' ? 1 : (b[f] ?? (f === 'content' ? '' : null)));
+  const ph = RECUR_FIELDS.map(() => '?').join(',');
+  const row = await one(`INSERT INTO recurring_rules (${RECUR_FIELDS.join(',')}, created_by) VALUES (${ph}, ?) RETURNING *`, [...vals, req.user.id]);
+  await logActivity({ userId: req.user.id, userName: req.user.name, action: '반복 업무 등록', targetType: 'recurring', targetId: row.id, detail: b.title });
+  res.json(row);
+}));
+
+app.put('/api/recurring/:id', requireAuth, wrap(async (req, res) => {
+  const id = Number(req.params.id);
+  const cur = await one('SELECT * FROM recurring_rules WHERE id = ?', [id]);
+  if (!cur) return res.status(404).json({ error: '없음' });
+  const b = normRecur({ ...cur, ...(req.body || {}) });
+  const err = validRecur(b); if (err) return res.status(400).json({ error: err });
+  b.active = b.active ? 1 : 0;
+  await run(`UPDATE recurring_rules SET ${RECUR_FIELDS.map(f => `${f}=?`).join(',')} WHERE id=?`,
+    [...RECUR_FIELDS.map(f => f === 'assignee_id' ? normAssignee(b.assignee_id) : b[f]), id]);
+  await logActivity({ userId: req.user.id, userName: req.user.name, action: '반복 업무 수정', targetType: 'recurring', targetId: id, detail: b.title });
+  res.json({ ok: true });
+}));
+
+app.delete('/api/recurring/:id', requireAuth, wrap(async (req, res) => {
+  const id = Number(req.params.id);
+  const row = await one('SELECT title FROM recurring_rules WHERE id = ?', [id]);
+  await run('DELETE FROM recurring_rules WHERE id = ?', [id]);   // 생성된 업무 인스턴스는 유지
+  await logActivity({ userId: req.user.id, userName: req.user.name, action: '반복 업무 삭제', targetType: 'recurring', targetId: id, detail: row?.title });
   res.json({ ok: true });
 }));
 
