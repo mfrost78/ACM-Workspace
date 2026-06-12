@@ -107,8 +107,8 @@ function renderLogin() {
   <div class="login-wrap">
     <form class="login-card" id="loginForm">
       <div class="login-logo">🗂️</div>
-      <h1>HR Workspace</h1>
-      <p class="sub">인사·총무 팀 입퇴사자 관리</p>
+      <h1>Workspace</h1>
+      <p class="sub">경영지원 업무 관리</p>
       <div class="field"><label>아이디</label><input class="input" name="username" autocomplete="username" autofocus required></div>
       <div class="field"><label>비밀번호</label><input class="input" name="password" type="password" autocomplete="current-password" required></div>
       <button class="btn btn-primary btn-block mt8" type="submit">로그인</button>
@@ -152,28 +152,25 @@ async function render() {
   const initial = (u.name || u.username || '?').slice(0, 1);
   app.innerHTML = `
   <div class="shell">
-    <aside class="sidebar" id="sidebar">
-      <div class="brand"><span class="logo">🗂️</span>
-        <span class="name">HR Workspace<small>입퇴사자 관리</small></span></div>
+    <header class="topnav" id="topnav">
+      <div class="brand"><span class="logo">🗂️</span><span class="name">Workspace</span></div>
       <nav class="nav" id="nav">
         ${NAV.filter(n => !n.adminOnly || u.role === 'admin').map(n => n.sec
-          ? `<div class="nav-sep">${n.sec}</div>`
+          ? `<span class="nav-sep">${n.sec}</span>`
           : `<button class="nav-item ${state.route === n.id ? 'active' : ''}" data-route="${n.id}">
-               <span class="ic">${n.ic}</span><span>${n.label}</span>
+               <span class="ic">${n.ic}</span><span class="lbl">${n.label}</span>
                ${n.badgeKey && dash[n.badgeKey] ? `<span class="badge">${dash[n.badgeKey]}</span>` : ''}
              </button>`).join('')}
       </nav>
-      <div class="side-foot">
+      <div class="topnav-right">
         <div class="user-chip">
           <div class="avatar" style="background:${esc(u.color || 'var(--accent)')}">${esc(initial)}</div>
           <div class="meta"><b>${esc(u.name)}</b><span>${esc(u.username)} · ${u.role === 'admin' ? '관리자' : '담당자'}</span></div>
         </div>
-        <div class="flex mt8" style="padding:0 4px">
-          <button class="btn btn-sm btn-ghost" id="btnSettings">⚙️ 설정</button>
-          <button class="btn btn-sm btn-ghost" id="btnLogout">로그아웃</button>
-        </div>
+        <button class="icon-btn" id="btnSettings" title="설정">⚙️</button>
+        <button class="icon-btn" id="btnLogout" title="로그아웃">🚪</button>
       </div>
-    </aside>
+    </header>
     <main class="main" id="view"></main>
   </div>`;
 

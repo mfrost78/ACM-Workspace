@@ -61,8 +61,8 @@ export const ONBOARDING_TASKS = [
 export const OFFBOARDING_TASKS = [
   { key: 'yeoncha',         label: '연차정산',        type: 'amount', cats: ['현장', '본사', '지원/일반'] },
   { key: 'hyeophoebi',      label: '협회비·교육비',   type: 'amount', cats: HB },
-  { key: 'jujaebi',         label: '주재비',          type: 'select', opts: 'wcn', cats: ONLY_SITE },
-  { key: 'hyuil_sudang',    label: '현장 휴일수당',   type: 'select', opts: 'wcn', cats: ONLY_SITE },
+  { key: 'jujaebi',         label: '주재비',          type: 'amount', cats: ONLY_SITE },
+  { key: 'hyuil_sudang',    label: '현장 휴일수당',   type: 'amount', cats: ONLY_SITE },
   { key: 'sangsil',         label: '상실신고',        type: 'select', opts: 'wc',  cats: A },
   { key: 'toejikgeum',      label: '퇴직금 지급',     type: 'select', opts: 'wcn', cats: A },
   { key: 'irp',             label: '퇴직연금/IRP 문자', type: 'select', opts: 'wcn', cats: A },
