@@ -763,10 +763,11 @@ app.get('/api/tasks', requireAuth, wrap(async (req, res) => {
   const showArchived = req.query.archived === '1';
   const today = kstTodayStr();
   rows = rows.filter(r => isArchivedRow(r, today) === showArchived);
-  // F/U 건수 집계 병합
-  const counts = await q(`SELECT task_id, COUNT(*)::int AS c FROM task_followups GROUP BY task_id`);
-  const cmap = {}; for (const c of counts) cmap[c.task_id] = c.c;
-  for (const r of rows) r.fu_count = cmap[r.id] || 0;
+  // F/U 건수 + 최근 진행내용 병합 (fu_date, id 순 정렬 → 마지막이 최신)
+  const fus = await q(`SELECT task_id, content, fu_date, id FROM task_followups ORDER BY task_id, fu_date, id`);
+  const cmap = {}, lastMap = {};
+  for (const f of fus) { cmap[f.task_id] = (cmap[f.task_id] || 0) + 1; lastMap[f.task_id] = f.content; }
+  for (const r of rows) { r.fu_count = cmap[r.id] || 0; r.last_fu = lastMap[r.id] || ''; }
   res.json(rows);
 }));
 

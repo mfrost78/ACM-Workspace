@@ -55,6 +55,16 @@ function openModal(html, cls = '') {
 function closeModal() { $('#modal-root').innerHTML = ''; }
 document.addEventListener('keydown', e => { if (e.key === 'Escape') closeModal(); });
 
+// 날짜 입력 연도 자릿수 버그 방지 — min/max에 4자리 연도를 부여하면
+// 브라우저(크로미움)가 연도 칸을 4자리로 제한하고 입력 완료 시 월 칸으로 자동 이동한다.
+document.addEventListener('focusin', e => {
+  const el = e.target;
+  if (el && el.tagName === 'INPUT' && el.type === 'date' && !el.getAttribute('max')) {
+    el.setAttribute('min', '1900-01-01');
+    el.setAttribute('max', '2999-12-31');
+  }
+});
+
 /* ============ 상태 ============ */
 const state = { user: null, route: 'dashboard', theme: localStorage.getItem('theme') || 'light' };
 function applyTheme() { document.documentElement.dataset.theme = state.theme; }
@@ -125,25 +135,80 @@ function renderLogin() {
   });
 }
 
-/* ============ 셸 / 네비 ============ */
+/* ============ 셸 / 네비 ============
+   주 기능은 업무 관리 — 업무 보드를 앞쪽에 배치, 입퇴사는 보조(드롭다운 그룹)로 묶음 */
 const NAV = [
-  { sec: '메인' },
   { id: 'dashboard', ic: '🏠', label: '대시보드' },
-  { sec: '입퇴사 관리' },
-  { id: 'onboarding', ic: '📥', label: '입사자 관리', badgeKey: 'onbOpen' },
-  { id: 'offboarding', ic: '📤', label: '퇴사자 관리', badgeKey: 'ofbOpen' },
-  { id: 'calendar', ic: '📅', label: '캘린더' },
-  { sec: '업무 관리' },
   { id: 'todo', ic: '🗂️', label: '업무 보드', badgeKey: 'myTaskOpen' },
-  { sec: '데이터' },
-  { id: 'employees', ic: '👥', label: '재직자 현황' },
-  { id: 'activity', ic: '🕑', label: '활동 기록' },
-  { sec: '관리', adminOnly: true },
+  { id: 'calendar', ic: '📅', label: '캘린더' },
+  { group: '입퇴사', ic: '🔄', items: [
+    { id: 'onboarding', ic: '📥', label: '입사자 관리', badgeKey: 'onbOpen' },
+    { id: 'offboarding', ic: '📤', label: '퇴사자 관리', badgeKey: 'ofbOpen' },
+  ] },
+  { group: '데이터', ic: '📊', items: [
+    { id: 'employees', ic: '👥', label: '재직자 현황' },
+    { id: 'activity', ic: '🕑', label: '활동 기록' },
+  ] },
   { id: 'users', ic: '🔑', label: '사용자 관리', adminOnly: true },
 ];
 
+// id로 NAV 항목(그룹 하위 포함) 정의 찾기
+function findNavItem(id) {
+  for (const n of NAV) {
+    if (n.id === id) return n;
+    if (n.items) { const c = n.items.find(it => it.id === id); if (c) return c; }
+  }
+  return null;
+}
+// 버튼에 카운트 배지 부여/갱신/제거 (caret 앞에 삽입)
+function setNavBadge(btn, val) {
+  let badge = btn.querySelector(':scope > .badge');
+  if (val) {
+    if (!badge) {
+      badge = document.createElement('span'); badge.className = 'badge';
+      btn.insertBefore(badge, btn.querySelector('.caret') || null);
+    }
+    badge.textContent = val;
+  } else if (badge) badge.remove();
+}
+
 // 사용자 색상 선택용 추천 팔레트
 const USER_COLORS = ['#0071e3', '#34c759', '#ff9500', '#ff3b30', '#af52de', '#5856d6', '#00b8d9', '#8e8e93'];
+
+// 단일 항목 버튼
+function navItemHtml(n) {
+  return `<button class="nav-item ${state.route === n.id ? 'active' : ''}" data-route="${n.id}">
+    <span class="ic">${n.ic}</span><span class="lbl">${esc(n.label)}</span>
+    ${n.badgeKey && dash[n.badgeKey] ? `<span class="badge">${dash[n.badgeKey]}</span>` : ''}
+  </button>`;
+}
+// 전체 네비 HTML (그룹은 드롭다운)
+function navHtml(u) {
+  return NAV.filter(n => !n.adminOnly || u.role === 'admin').map(n => {
+    if (!n.group) return navItemHtml(n);
+    const items = n.items.filter(it => !it.adminOnly || u.role === 'admin');
+    const activeChild = items.some(it => it.id === state.route);
+    const sum = items.reduce((a, it) => a + (it.badgeKey ? (dash[it.badgeKey] || 0) : 0), 0);
+    return `<div class="nav-group ${activeChild ? 'has-active' : ''}" data-group="${esc(n.group)}">
+      <button class="nav-item nav-toggle ${activeChild ? 'active' : ''}" data-toggle>
+        <span class="ic">${n.ic}</span><span class="lbl">${esc(n.group)}</span>
+        ${sum ? `<span class="badge">${sum}</span>` : ''}
+        <span class="caret">▾</span>
+      </button>
+      <div class="nav-menu">
+        ${items.map(it => `<button class="nav-menu-item ${state.route === it.id ? 'active' : ''}" data-route="${it.id}">
+          <span class="ic">${it.ic}</span><span class="lbl">${esc(it.label)}</span>
+          ${it.badgeKey && dash[it.badgeKey] ? `<span class="badge">${dash[it.badgeKey]}</span>` : ''}
+        </button>`).join('')}
+      </div>
+    </div>`;
+  }).join('');
+}
+// 바깥 클릭 시 열린 드롭다운 닫기 (전역 1회)
+document.addEventListener('click', e => {
+  if (e.target.closest('.nav-group')) return;
+  document.querySelectorAll('.nav-group.open').forEach(g => g.classList.remove('open'));
+});
 
 let dash = {};
 async function render() {
@@ -154,14 +219,7 @@ async function render() {
   <div class="shell">
     <header class="topnav" id="topnav">
       <div class="brand"><span class="logo">🗂️</span><span class="name">Workspace</span></div>
-      <nav class="nav" id="nav">
-        ${NAV.filter(n => !n.adminOnly || u.role === 'admin').map(n => n.sec
-          ? `<span class="nav-sep">${n.sec}</span>`
-          : `<button class="nav-item ${state.route === n.id ? 'active' : ''}" data-route="${n.id}">
-               <span class="ic">${n.ic}</span><span class="lbl">${n.label}</span>
-               ${n.badgeKey && dash[n.badgeKey] ? `<span class="badge">${dash[n.badgeKey]}</span>` : ''}
-             </button>`).join('')}
-      </nav>
+      <nav class="nav" id="nav">${navHtml(u)}</nav>
       <div class="topnav-right">
         <div class="user-chip">
           <div class="avatar" style="background:${esc(u.color || 'var(--accent)')}">${esc(initial)}</div>
@@ -174,7 +232,17 @@ async function render() {
     <main class="main" id="view"></main>
   </div>`;
 
-  $('#nav').addEventListener('click', e => {
+  const navEl = $('#nav');
+  navEl.addEventListener('click', e => {
+    const tog = e.target.closest('[data-toggle]');
+    if (tog) {
+      const grp = tog.closest('.nav-group');
+      const wasOpen = grp.classList.contains('open');
+      navEl.querySelectorAll('.nav-group.open').forEach(g => g.classList.remove('open'));
+      if (!wasOpen) grp.classList.add('open');
+      e.stopPropagation();
+      return;
+    }
     const b = e.target.closest('[data-route]');
     if (b) { state.route = b.dataset.route; render(); }
   });
@@ -192,16 +260,18 @@ async function render() {
 async function refreshBadges() {
   try {
     dash = await api('GET', '/dashboard');
-    NAV.forEach(n => {
-      if (!n.badgeKey) return;
-      const btn = document.querySelector(`[data-route="${n.id}"]`);
-      if (!btn) return;
-      let badge = btn.querySelector('.badge');
-      const val = dash[n.badgeKey];
-      if (val) {
-        if (!badge) { badge = document.createElement('span'); badge.className = 'badge'; btn.appendChild(badge); }
-        badge.textContent = val;
-      } else if (badge) badge.remove();
+    // 개별 항목(단일 버튼 + 그룹 메뉴 항목) 배지
+    document.querySelectorAll('#nav [data-route]').forEach(btn => {
+      const def = findNavItem(btn.dataset.route);
+      if (def?.badgeKey) setNavBadge(btn, dash[def.badgeKey]);
+    });
+    // 그룹 토글 버튼 — 하위 배지 합산
+    document.querySelectorAll('#nav .nav-group').forEach(grp => {
+      const g = NAV.find(n => n.group === grp.dataset.group);
+      if (!g) return;
+      const sum = g.items.reduce((a, it) => a + (it.badgeKey ? (dash[it.badgeKey] || 0) : 0), 0);
+      const tog = grp.querySelector('.nav-toggle');
+      if (tog) setNavBadge(tog, sum);
     });
   } catch { /* 무시 */ }
 }
@@ -930,7 +1000,7 @@ async function viewTodo(view) {
       </div>`}
       <div class="toolbar">
         <div class="seg" id="vSeg">
-          ${[['list', '리스트'], ['kanban', '칸반'], ['rel', '관계도']].map(([v, l]) =>
+          ${[['list', '리스트'], ['kanban', '칸반'], ['rel', '관계도'], ['timeline', '타임라인']].map(([v, l]) =>
             `<button data-v="${v}" class="${TODO.view === v ? 'on' : ''}">${l}</button>`).join('')}
         </div>
         <div class="seg" id="stSeg">
@@ -950,6 +1020,7 @@ async function viewTodo(view) {
     let bodyHtml = '';
     if (TODO.view === 'list') bodyHtml = renderList(projects, tasks, projOk, taskOk, inArchive());
     else if (TODO.view === 'kanban') bodyHtml = renderKanban(vTasks);
+    else if (TODO.view === 'timeline') bodyHtml = renderTimeline(projects, tasks, projOk, taskOk);
     else bodyHtml = renderRel(projects, tasks, projOk, taskOk);
     wrap.innerHTML = toolbar(vTasks) + bodyHtml;
 
@@ -1039,7 +1110,7 @@ function renderList(projects, tasks, projOk, taskOk, arch = false) {
   // 프로젝트 미연결 업무
   const orphans = (byProj[0] || []).filter(taskOk);
   if (orphans.length) blocks.push(`
-    <div class="proj-block">
+    <div class="proj-block orphan">
       <div class="proj-head"><div class="proj-title">◇ (프로젝트 미연결 업무)</div></div>
       <div class="task-rows">${orphans.map(t => taskRow(t, arch)).join('')}</div>
     </div>`);
@@ -1070,6 +1141,7 @@ function taskRow(t, arch = false) {
       <span class="t-muted">${esc(schedText(t))}</span>
       ${t.fu_count ? `<span class="fu-chip" title="진행상황 ${t.fu_count}건">💬 ${t.fu_count}</span>` : ''}
       ${archBtn('tasks', t, arch)}
+      ${t.last_fu ? `<span class="fu-last" title="${esc(t.last_fu)}">💬 ${esc(t.last_fu)}</span>` : ''}
     </div>`;
 }
 
@@ -1096,6 +1168,7 @@ function kbCard(t) {
       <div class="kb-card-top">${catBadge(t.category)} ${prioBadge(t.priority)} ${ddayBadge(t)}</div>
       <div class="kb-card-title">${recurMark(t)}${esc(t.title)}</div>
       ${t.project_title ? `<div class="kb-card-proj">◆ ${esc(t.project_title)}</div>` : ''}
+      ${t.last_fu ? `<div class="kb-card-fu" title="${esc(t.last_fu)}">💬 ${esc(t.last_fu)}</div>` : ''}
       <div class="kb-card-foot">
         <span class="asg">${t.assignee_name ? `<span class="udot" style="background:${esc(t.assignee_color || '#888')}"></span>${esc(t.assignee_name)}` : '미지정'}</span>
         ${t.target_date ? `<span class="t-muted">~${esc(t.target_date)}</span>` : ''}
@@ -1159,6 +1232,101 @@ function renderRel(projects, tasks, projOk, taskOk) {
         </div>`).join('')}</div>
     </div>`);
   return `<div class="rel-board">${nodes.join('') || `<div class="empty"><div class="big">🔗</div>표시할 업무가 없습니다.</div>`}</div>`;
+}
+
+// ---- 타임라인(간트) 뷰 ----
+// 시작일~목표일을 가로 바로 표시. 프로젝트(상위)–하위 업무를 그룹으로 묶고 좌측 연결선으로 관계 표시.
+function renderTimeline(projects, tasks, projOk, taskOk) {
+  const byProj = {}; for (const t of tasks) (byProj[t.project_id ?? 0] ||= []).push(t);
+  const groups = [];
+  for (const p of projects) {
+    const vt = (byProj[p.id] || []).filter(taskOk);
+    if (!projOk(p) && !vt.length) continue;
+    groups.push({ proj: p, tasks: vt });
+  }
+  const orphans = (byProj[0] || []).filter(taskOk);
+  if (orphans.length) groups.push({ proj: null, tasks: orphans });
+  if (!groups.length) return `<div class="empty"><div class="big">📊</div>표시할 업무가 없습니다.</div>`;
+
+  // 표시할 날짜 수집 → 전체 범위 산출
+  const dates = [];
+  const collect = (r) => { if (r.start_date) dates.push(r.start_date); if (r.target_date) dates.push(r.target_date); if (r.done_date) dates.push(r.done_date); };
+  for (const g of groups) { if (g.proj) collect(g.proj); g.tasks.forEach(collect); }
+  const today = todayStr();
+  dates.push(today);
+  const parse = (s) => new Date(s + 'T00:00:00');
+  const minS = dates.reduce((a, b) => (a < b ? a : b));
+  const maxS = dates.reduce((a, b) => (a > b ? a : b));
+  const dayMs = 86400000;
+  const minD = parse(minS); minD.setDate(minD.getDate() - 3);
+  const maxD = parse(maxS); maxD.setDate(maxD.getDate() + 3);
+  const totalDays = Math.round((maxD - minD) / dayMs) + 1;
+  const dayW = Math.min(18, Math.max(3, Math.round(1100 / totalDays)));
+  const labelW = 200;
+  const offDays = (s) => Math.round((parse(s) - minD) / dayMs);
+  const barStyle = (r) => {
+    const s = r.start_date || r.target_date, e = r.target_date || r.start_date;
+    if (!s && !e) return null;
+    const a = offDays(s), b = offDays(e);
+    return `left:${a * dayW}px;width:${Math.max((b - a + 1) * dayW, 6)}px`;
+  };
+  const trackBg = `background-size:${7 * dayW}px 100%`;
+
+  // 월 헤더
+  const months = [];
+  let cur = new Date(minD.getFullYear(), minD.getMonth(), 1);
+  while (cur <= maxD) {
+    const mStart = cur < minD ? minD : cur;
+    const next = new Date(cur.getFullYear(), cur.getMonth() + 1, 1);
+    const mEnd = next > maxD ? maxD : new Date(next - dayMs);
+    const l = Math.round((mStart - minD) / dayMs) * dayW;
+    const w = (Math.round((mEnd - minD) / dayMs) - Math.round((mStart - minD) / dayMs) + 1) * dayW;
+    months.push({ label: `${cur.getFullYear()}.${String(cur.getMonth() + 1).padStart(2, '0')}`, l, w });
+    cur = next;
+  }
+  const todayLeft = offDays(today) * dayW;
+
+  const bar = (r, kind) => {
+    const st = barStyle(r);
+    if (!st) return `<div class="tl-track" style="${trackBg}"><span class="tl-nodate">일정 미정</span></div>`;
+    const overdue = r.status === '진행중' && r.target_date && r.target_date < today;
+    const cls = kind === 'proj' ? 'tl-proj-bar' : `tl-task-bar prio-l-${PRIORITY_TONE[r.priority] || 'mid'}`;
+    return `<div class="tl-track" style="${trackBg}">
+      <div class="tl-bar ${cls} ${r.status === '완료' ? 'done' : ''} ${overdue ? 'over' : ''}" style="${st}"
+        data-${kind}="${r.id}" title="${esc(r.title)} · ${esc(schedText(r))}">
+        <span class="tl-bar-label">${esc(r.title)}</span>
+      </div></div>`;
+  };
+
+  const rows = groups.map(g => {
+    const projRow = g.proj ? `
+      <div class="tl-row tl-proj-row">
+        <div class="tl-label tl-proj-label" data-proj="${g.proj.id}" title="${esc(g.proj.title)}">◆ ${esc(g.proj.title)}</div>
+        ${bar(g.proj, 'proj')}
+      </div>`
+      : `<div class="tl-row tl-proj-row">
+        <div class="tl-label tl-proj-label orphan">◇ 독립 업무</div>
+        <div class="tl-track" style="${trackBg}"></div>
+      </div>`;
+    const taskRows = g.tasks.length ? g.tasks.map(t => `
+      <div class="tl-row tl-task-row">
+        <div class="tl-label tl-task-label" data-task="${t.id}" title="${esc(t.title)}">${recurMark(t)}${esc(t.title)}</div>
+        ${bar(t, 'task')}
+      </div>`).join('')
+      : `<div class="tl-row tl-task-row"><div class="tl-label tl-task-label t-muted">하위 업무 없음</div><div class="tl-track" style="${trackBg}"></div></div>`;
+    return `<div class="tl-group">${projRow}<div class="tl-tasks">${taskRows}</div></div>`;
+  }).join('');
+
+  return `<div class="timeline"><div class="tl-scroll"><div class="tl-inner" style="min-width:${labelW + totalDays * dayW}px;--label-w:${labelW}px">
+    <div class="tl-head-row">
+      <div class="tl-corner">업무 / 기간</div>
+      <div class="tl-axis">${months.map(m => `<div class="tl-month" style="left:${m.l}px;width:${m.w}px">${m.label}</div>`).join('')}</div>
+    </div>
+    <div class="tl-body">
+      <div class="tl-today" style="left:calc(var(--label-w) + ${todayLeft}px)" title="오늘 ${today}"></div>
+      ${rows}
+    </div>
+  </div></div></div>`;
 }
 
 /* ---- 프로젝트 모달 ---- */
