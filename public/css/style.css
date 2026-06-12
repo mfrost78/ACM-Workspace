@@ -4,15 +4,15 @@
           "Apple SD Gothic Neo", "Malgun Gothic", system-ui, sans-serif;
 
   /* 의미색(입사=red/퇴사=blue 등 정보 구분) */
-  --accent: #2563eb;
-  --accent-hover: #1d4fd8;
-  --accent-soft: rgba(37,99,235,.1);
+  --accent: #4577d4;
+  --accent-hover: #3866c2;
+  --accent-soft: rgba(69,119,212,.11);
   --green: #34c759;  --red: #ff3b30;  --orange: #ff9500;  --gray-tone: #8e8e93;
 
-  /* 디자인 key 액센트 — 블루는 "배경 채움"으로, 그 위 텍스트는 화이트(--brand-on) */
-  --brand: #2563eb;
-  --brand-strong: #1d4fd8;
-  --brand-soft: rgba(37,99,235,.12);
+  /* 디자인 key 액센트 — 차분한 소프트 블루. 배경 채움용, 그 위 텍스트는 화이트(--brand-on) */
+  --brand: #5b8def;
+  --brand-strong: #4a7ad9;
+  --brand-soft: rgba(91,141,239,.13);
   --brand-on: #ffffff;
   --ink: #181a16;
   --ink-2: #2a2d27;
@@ -57,8 +57,8 @@
   --shadow: 0 12px 40px rgba(0,0,0,.5);
   --shadow-sm: none;
   --backdrop: rgba(0,0,0,.6);
-  --accent: #6ea8ff; --accent-hover: #8db9ff; --accent-soft: rgba(110,168,255,.16);
-  --brand: #3b82f6; --brand-strong: #60a5fa; --brand-soft: rgba(59,130,246,.22); --brand-on: #ffffff;
+  --accent: #8fb4f7; --accent-hover: #a8c5fa; --accent-soft: rgba(143,180,247,.16);
+  --brand: #5d8ce0; --brand-strong: #7aa3ec; --brand-soft: rgba(93,140,224,.22); --brand-on: #ffffff;
   --ink: #181a16; --ink-2: #2a2d27;
   --tone-done-bg: rgba(168,217,22,.22); --tone-done-fg: #c8e96a;
   --tone-todo-bg: rgba(255,159,10,.2);  --tone-todo-fg: #ffb340;
@@ -459,14 +459,10 @@ table.xls-tbl .cell-select.tone-na   { background-color: var(--tone-na-bg);   co
 .proj-head:hover { background: var(--brand-soft); box-shadow: inset 0 0 0 99px rgba(0,0,0,.02); }
 .proj-title { font-weight: 700; font-size: 14.5px; color: var(--accent); }
 .proj-prog { font-size: 12px; }
-/* 하위 업무 — 들여쓰기 + 좌측 가이드선으로 종속 표현 */
-.task-rows { display: flex; flex-direction: column; position: relative; padding-left: 26px; }
-.task-rows::before { content: ''; position: absolute; left: 14px; top: 0; bottom: 12px; width: 2px;
-  background: var(--border-strong); border-radius: 2px; }
-.task-row { position: relative; display: flex; align-items: center; gap: 8px; padding: 9px 16px 9px 10px;
+/* 하위 업무 — 은은한 들여쓰기로 종속 표현 (헤더 밴드가 그룹 경계 역할) */
+.task-rows { display: flex; flex-direction: column; padding-left: 16px; }
+.task-row { display: flex; align-items: center; gap: 8px; padding: 9px 16px 9px 10px;
   border-bottom: 1px solid var(--border); cursor: pointer; font-size: 13px; flex-wrap: wrap; }
-.task-row::before { content: ''; position: absolute; left: -12px; top: 22px; width: 12px; height: 2px;
-  background: var(--border-strong); border-radius: 2px; }
 .task-row:last-child { border-bottom: none; }
 .task-row:hover { background: var(--bg-hover); }
 .task-name { font-weight: 550; min-width: 160px; }
@@ -476,10 +472,11 @@ table.xls-tbl .cell-select.tone-na   { background-color: var(--tone-na-bg);   co
 .proj-block.orphan { border-left-color: var(--border-strong); }
 .proj-block.orphan .proj-head { background: transparent; }
 .proj-block.orphan .proj-title { color: var(--text-2); }
-/* 최근 진행상황(F/U) 한 줄 미리보기 — 말줄임 */
-.fu-last { flex-basis: 100%; min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis;
-  white-space: nowrap; font-size: 12px; color: var(--text-2); margin-top: 1px;
-  border-left: 2px solid var(--brand); padding: 1px 0 1px 8px; }
+/* 최근 진행상황(F/U) 한 줄 미리보기 — 제목 옆 같은 줄에 말줄임 */
+.fu-last { flex: 1 1 140px; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; font-size: 12px; color: var(--text-2);
+  border-left: 2px solid var(--brand); padding-left: 8px; }
+.fu-last.empty { border-left-color: transparent; }   /* F/U 없을 때도 메타 우측 정렬 유지용 스페이서 */
 
 /* 칸반 뷰 */
 .kanban { display: flex; gap: 14px; overflow-x: auto; padding-bottom: 8px; align-items: flex-start; }

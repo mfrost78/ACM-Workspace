@@ -256,10 +256,16 @@ async function render() {
   refreshBadges();
 }
 
-// 사이드바 배지(진행중 건수)를 백그라운드에서 갱신 — 화면 전환을 막지 않음
+// 사이드바 배지(진행중 건수)를 백그라운드에서 갱신 — 화면 전환을 막지 않음.
+// /dashboard 는 무거운 집계라서 60초 내 재호출은 캐시값으로 다시 그리기만 한다.
+let dashAt = 0;
+const DASH_TTL = 60_000;
 async function refreshBadges() {
   try {
-    dash = await api('GET', '/dashboard');
+    if (Date.now() - dashAt > DASH_TTL) {
+      dash = await api('GET', '/dashboard');
+      dashAt = Date.now();
+    }
     // 개별 항목(단일 버튼 + 그룹 메뉴 항목) 배지
     document.querySelectorAll('#nav [data-route]').forEach(btn => {
       const def = findNavItem(btn.dataset.route);
@@ -300,7 +306,7 @@ async function viewDashboard(view) {
     const r = $('#dashRetry', view); if (r) r.addEventListener('click', () => viewDashboard(view));
     return;
   }
-  dash = dashData;
+  dash = dashData; dashAt = Date.now();   // 직후 refreshBadges가 재호출하지 않도록 캐시 갱신
   const upcoming = [...onb.map(o => ({ ...o, kind: 'in', date: o.join_date })),
                     ...ofb.map(o => ({ ...o, kind: 'out', date: o.leave_date }))]
     .filter(x => x.date).sort((a, b) => a.date.localeCompare(b.date)).slice(0, 8);
@@ -1137,11 +1143,11 @@ function taskRow(t, arch = false) {
       <span class="task-name">● ${recurMark(t)}${esc(t.title)}</span>
       <span class="pill sub">${esc(t.subcategory || t.category)}</span>
       ${prioBadge(t.priority)} ${arch ? statusPill(t.status) : inlineStatusSel(t)} ${ddayBadge(t)}
+      ${t.last_fu ? `<span class="fu-last" title="${esc(t.last_fu)}">💬 ${esc(t.last_fu)}</span>` : '<span class="fu-last empty"></span>'}
       <span class="t-muted asg">${t.assignee_name ? `<span class="udot" style="background:${esc(t.assignee_color || '#888')}"></span>${esc(t.assignee_name)}` : '미지정'}</span>
       <span class="t-muted">${esc(schedText(t))}</span>
       ${t.fu_count ? `<span class="fu-chip" title="진행상황 ${t.fu_count}건">💬 ${t.fu_count}</span>` : ''}
       ${archBtn('tasks', t, arch)}
-      ${t.last_fu ? `<span class="fu-last" title="${esc(t.last_fu)}">💬 ${esc(t.last_fu)}</span>` : ''}
     </div>`;
 }
 
