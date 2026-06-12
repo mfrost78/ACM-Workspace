@@ -1024,7 +1024,7 @@ function renderRel(projects, tasks, projOk, taskOk) {
 async function openProjectModal(id, onSaved) {
   await getUsers(); todoUsers = _usersCache;
   const editing = !!id;
-  const d = editing ? (todoProjects.find(p => p.id === id) || await api('GET', '/projects').then(ps => ps.find(p => p.id === id))) : { status: '진행중', priority: '보통', category: '인사' };
+  const d = editing ? (todoProjects.find(p => Number(p.id) === Number(id)) || await api('GET', '/projects').then(ps => ps.find(p => Number(p.id) === Number(id)))) : { status: '진행중', priority: '보통', category: '인사' };
   openModal(`
     <div class="modal-head"><h3>프로젝트 ${editing ? '정보' : '등록'}</h3><button class="x" data-x>×</button></div>
     <div class="modal-body"><form id="projForm" class="form-grid">
@@ -1065,7 +1065,7 @@ async function openTaskModal(id, opts = {}) {
   const editing = !!id;
   let d;
   if (editing) {
-    d = await api('GET', '/tasks').then(ts => ts.find(t => t.id === id));
+    d = await api('GET', '/tasks').then(ts => ts.find(t => Number(t.id) === Number(id)));
     if (!d) return toast('업무를 찾을 수 없습니다', true);
   } else {
     d = { status: '진행중', priority: '보통', project_id: opts.project_id ? Number(opts.project_id) : '' };
@@ -1255,11 +1255,12 @@ async function viewUsers(view) {
         </tbody></table>
       </div></div></div>`;
     wrap.querySelectorAll('[data-edit]').forEach(b => b.addEventListener('click', () => {
-      const row = rows.find(r => r.id === Number(b.dataset.edit));
-      openUserModal(row, draw);
+      const row = rows.find(r => String(r.id) === b.dataset.edit);
+      if (row) openUserModal(row, draw);
     }));
     wrap.querySelectorAll('[data-del]').forEach(b => b.addEventListener('click', async () => {
-      const row = rows.find(r => r.id === Number(b.dataset.del));
+      const row = rows.find(r => String(r.id) === b.dataset.del);
+      if (!row) return;
       if (!confirm(`'${row.name}(${row.username})' 사용자를 삭제할까요?`)) return;
       try { await api('DELETE', `/users/${row.id}`); toast('삭제되었습니다'); draw(); }
       catch (e) { toast(e.message, true); }
