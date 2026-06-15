@@ -752,10 +752,33 @@ app.get('/api/activity', requireAuth, wrap(async (req, res) => {
 const STATUS_SET = new Set(TODO_STATUS);
 const PRIORITY_SET = new Set(TODO_PRIORITY);
 const PROJ_CAT_SET = new Set(PROJECT_CATEGORIES);
-const ALL_SUBCATS = new Set(Object.values(TASK_SUBCATEGORIES).flat());
-// 하위 구분2 → 상위 구분 역매핑
-const SUBCAT_GROUP = {};
-for (const [g, subs] of Object.entries(TASK_SUBCATEGORIES)) for (const s of subs) SUBCAT_GROUP[s] = g;
+
+// 업무 구분(subcategory)은 설정에서 편집 가능 — 기본값은 config.js, 오버라이드는 app_settings에 저장.
+const DEFAULT_SUBCATS = JSON.parse(JSON.stringify(TASK_SUBCATEGORIES));
+let effectiveSubcats = DEFAULT_SUBCATS;
+const ALL_SUBCATS = new Set();
+const SUBCAT_GROUP = {};   // 하위 구분 → 상위 구분 역매핑
+function rebuildSubcatIndex() {
+  ALL_SUBCATS.clear();
+  for (const k of Object.keys(SUBCAT_GROUP)) delete SUBCAT_GROUP[k];
+  for (const [g, subs] of Object.entries(effectiveSubcats)) for (const s of subs) { ALL_SUBCATS.add(s); SUBCAT_GROUP[s] = g; }
+}
+rebuildSubcatIndex();
+
+// 설정(app_settings) 로드 — TTL 캐시. 서버리스 다중 인스턴스 간 약간의 지연 허용.
+let _cfgAt = 0, _optsOverride = null;
+const CFG_TTL = 60_000;
+async function loadConfig(force = false) {
+  if (!force && _cfgAt && Date.now() - _cfgAt < CFG_TTL) return;
+  _cfgAt = Date.now();
+  try {
+    const rows = await q(`SELECT key, value FROM app_settings WHERE key IN ('subcategories','opts')`);
+    const map = {}; for (const r of rows) map[r.key] = r.value;
+    effectiveSubcats = (map.subcategories && typeof map.subcategories === 'object') ? map.subcategories : DEFAULT_SUBCATS;
+    _optsOverride = map.opts || null;
+    rebuildSubcatIndex();
+  } catch { /* app_settings 미생성 등은 기본값 유지 */ }
+}
 
 function validTodo({ status, priority }) {
   if (status && !STATUS_SET.has(status)) return '상태 값이 올바르지 않습니다.';
@@ -887,6 +910,7 @@ app.get('/api/tasks', requireAuth, wrap(async (req, res) => {
 
 const TASK_FIELDS = ['project_id', 'category', 'subcategory', 'priority', 'title', 'content', 'start_date', 'target_date', 'done_date', 'status', 'assignee_id', 'assignee_ids'];
 app.post('/api/tasks', requireAuth, wrap(async (req, res) => {
+  await loadConfig();
   const b = req.body || {};
   if (!b.title || !b.subcategory) return res.status(400).json({ error: '제목·구분은 필수입니다.' });
   if (!ALL_SUBCATS.has(b.subcategory)) return res.status(400).json({ error: '업무 구분 값이 올바르지 않습니다.' });
@@ -905,6 +929,7 @@ app.post('/api/tasks', requireAuth, wrap(async (req, res) => {
 }));
 
 app.put('/api/tasks/:id', requireAuth, wrap(async (req, res) => {
+  await loadConfig();
   const id = Number(req.params.id);
   const b = req.body || {};
   const cur = await one('SELECT * FROM tasks WHERE id = ?', [id]);
@@ -1018,6 +1043,37 @@ for (const table of ['tasks', 'projects']) {
   }));
 }
 
+/* --- 앱 설정(업무 구분 / 체크리스트 옵션) --- */
+app.get('/api/config', requireAuth, wrap(async (req, res) => {
+  await loadConfig();
+  res.json({ subcategories: effectiveSubcats, opts: _optsOverride });
+}));
+
+app.post('/api/config', requireAuth, requireAdmin, wrap(async (req, res) => {
+  const b = req.body || {};
+  // 형태 검증: { 그룹: [문자열...] } / { 세트키: [문자열...] }
+  const validShape = (o) => o && typeof o === 'object' && !Array.isArray(o)
+    && Object.values(o).every(v => Array.isArray(v) && v.every(s => typeof s === 'string'));
+  const upserts = [];
+  if ('subcategories' in b) {
+    if (!validShape(b.subcategories)) return res.status(400).json({ error: '업무 구분 형식이 올바르지 않습니다.' });
+    upserts.push(['subcategories', b.subcategories]);
+  }
+  if ('opts' in b) {
+    if (!validShape(b.opts)) return res.status(400).json({ error: '옵션 형식이 올바르지 않습니다.' });
+    if (Object.values(b.opts).some(arr => arr.length < 1)) return res.status(400).json({ error: '각 옵션은 최소 1개 이상이어야 합니다.' });
+    upserts.push(['opts', b.opts]);
+  }
+  if (!upserts.length) return res.status(400).json({ error: '변경 항목 없음' });
+  for (const [key, value] of upserts) {
+    await run(`INSERT INTO app_settings (key, value, updated_at) VALUES (?, ?, now())
+               ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`, [key, JSON.stringify(value)]);
+  }
+  await loadConfig(true);
+  logAct({ userId: req.user.id, userName: req.user.name, action: '설정 변경', targetType: 'config', detail: upserts.map(u => u[0]).join(',') });
+  res.json({ subcategories: effectiveSubcats, opts: _optsOverride });
+}));
+
 /* --- 인앱 알림 --- */
 app.get('/api/notifications', requireAuth, wrap(async (req, res) => {
   const items = await q(`SELECT * FROM notifications WHERE user_id = ? ORDER BY id DESC LIMIT 30`, [req.user.id]);
@@ -1066,6 +1122,7 @@ app.get('/api/recurring', requireAuth, wrap(async (req, res) => {
 
 const RECUR_FIELDS = ['freq', 'dow', 'dom', 'month', 'day', 'lead_days', 'title', 'content', 'category', 'subcategory', 'priority', 'assignee_id', 'active'];
 app.post('/api/recurring', requireAuth, wrap(async (req, res) => {
+  await loadConfig();
   const b = normRecur(req.body || {});
   const err = validRecur(b); if (err) return res.status(400).json({ error: err });
   const vals = RECUR_FIELDS.map(f => f === 'assignee_id' ? normAssignee(b.assignee_id)
@@ -1078,6 +1135,7 @@ app.post('/api/recurring', requireAuth, wrap(async (req, res) => {
 }));
 
 app.put('/api/recurring/:id', requireAuth, wrap(async (req, res) => {
+  await loadConfig();
   const id = Number(req.params.id);
   const cur = await one('SELECT * FROM recurring_rules WHERE id = ?', [id]);
   if (!cur) return res.status(404).json({ error: '없음' });

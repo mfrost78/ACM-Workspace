@@ -78,10 +78,18 @@ async function init() {
   catch { renderLogin(); }
 }
 
+// 서버 설정(업무 구분/체크리스트 옵션)을 런타임 반영 — import한 객체를 제자리 수정해 모든 사용처가 즉시 반영.
+// 키 단위 병합(부분 오버라이드도 안전): 제공된 그룹/세트만 교체하고 나머지 기본값은 유지.
+function applyConfig(cfg) {
+  if (cfg?.subcategories && typeof cfg.subcategories === 'object') Object.assign(TASK_SUBCATEGORIES, cfg.subcategories);
+  if (cfg?.opts && typeof cfg.opts === 'object') Object.assign(OPTS, cfg.opts);
+}
+
 // 로그인 직후 게이트: 기본 비밀번호면 변경 화면으로
-function afterAuth() {
-  if (state.user?.must_change_pw) renderForcePwChange();
-  else render();
+async function afterAuth() {
+  if (state.user?.must_change_pw) { renderForcePwChange(); return; }
+  try { applyConfig(await api('GET', '/config')); } catch { /* 설정 로드 실패 시 기본값 유지 */ }
+  render();
 }
 
 function renderForcePwChange() {
@@ -991,9 +999,10 @@ async function listView(view, kind) {
               if (forcedNA) return `<td class="cell-na">대상아님</td>`;
               if (t.type === 'date') return `<td><input type="date" class="cell-input" data-id="${r.id}" data-task="${t.key}" value="${esc(tasks[t.key] || '')}"></td>`;
               if (t.type === 'amount') return `<td><input type="text" class="cell-input" placeholder="금액/내용" data-id="${r.id}" data-task="${t.key}" value="${esc(tasks[t.key] ?? '')}"></td>`;
-              const cur = tasks[t.key] || OPTS[t.opts][0];
+              const base = OPTS[t.opts] || [];
+              const cur = tasks[t.key] || base[0] || '';
               const tone = STATE_TONE[cur] || 'na';
-              const optList = OPTS[t.opts].includes(cur) ? OPTS[t.opts] : [cur, ...OPTS[t.opts]];
+              const optList = base.includes(cur) ? base : [cur, ...base];
               return `<td><select class="cell-select tone-${tone}" data-id="${r.id}" data-task="${t.key}">${optList.map(o => `<option ${o === cur ? 'selected' : ''}>${esc(o)}</option>`).join('')}</select></td>`;
             }).join('')}
           </tr>`;
@@ -2159,22 +2168,104 @@ async function viewActivity(view) {
 
 /* ============ 설정(비밀번호 변경) ============ */
 function openSettings() {
+  const isAdmin = state.user?.role === 'admin';
+  // 로컬 편집 사본(저장 시 한 번에 반영)
+  const cfgSub = JSON.parse(JSON.stringify(TASK_SUBCATEGORIES));
+  const cfgOpts = JSON.parse(JSON.stringify(OPTS));
+  const optUsage = {};
+  for (const t of [...ONBOARDING_TASKS, ...OFFBOARDING_TASKS]) if (t.opts) (optUsage[t.opts] ||= []).push(t.label);
+
   openModal(`
     <div class="modal-head"><h3>설정</h3><button class="x" data-x>×</button></div>
     <div class="modal-body">
       <div class="section-title" style="margin-top:0">비밀번호 변경</div>
       <form id="pwForm" class="form-grid">
-        <div class="field full"><label>현재 비밀번호</label><input class="input" name="current" type="password" required></div>
-        <div class="field full"><label>새 비밀번호 (8자 이상)</label><input class="input" name="next" type="password" required></div>
+        <div class="field full"><label>현재 비밀번호</label><input class="input" name="current" type="password"></div>
+        <div class="field full"><label>새 비밀번호 (8자 이상)</label><input class="input" name="next" type="password"></div>
+        <div class="field full"><button class="btn btn-sm btn-primary" id="savePw" type="button">비밀번호 변경</button></div>
       </form>
+      ${isAdmin ? `
+        <div class="section-title">업무 보드 — 업무 구분 관리</div>
+        <p class="t-muted" style="font-size:12px;margin:0 0 8px">상위 구분별 세부 업무 구분을 추가/삭제합니다.</p>
+        <div id="subEdit"></div>
+        <div class="section-title">입퇴사 체크리스트 — 선택 옵션 관리</div>
+        <p class="t-muted" style="font-size:12px;margin:0 0 8px">드롭다운 선택지를 추가/삭제합니다. 첫 번째 값이 기본(미처리) 상태입니다.</p>
+        <div id="optEdit"></div>` : ''}
     </div>
     <div class="modal-foot"><div class="spacer"></div><button class="btn" data-x>닫기</button>
-      <button class="btn btn-primary" id="savePw">변경</button></div>`);
+      ${isAdmin ? `<button class="btn btn-primary" id="saveCfg">설정 저장</button>` : ''}</div>`, 'lg');
+
   const root = $('#modal-root');
   root.querySelectorAll('[data-x]').forEach(b => b.addEventListener('click', closeModal));
   $('#savePw', root).addEventListener('click', async () => {
     const body = Object.fromEntries(new FormData($('#pwForm', root)).entries());
-    try { await api('POST', '/auth/password', body); toast('비밀번호가 변경되었습니다'); closeModal(); }
+    if (!body.current || !body.next) return toast('현재/새 비밀번호를 입력하세요', true);
+    try { await api('POST', '/auth/password', body); toast('비밀번호가 변경되었습니다'); $('#pwForm', root).reset(); }
     catch (e) { toast(e.message, true); }
+  });
+  if (!isAdmin) return;
+
+  // --- 업무 구분 편집 ---
+  const subEdit = $('#subEdit', root);
+  function drawSub() {
+    subEdit.innerHTML = Object.entries(cfgSub).map(([g, subs]) => `
+      <div class="cfg-group">
+        <div class="cfg-group-name">${esc(g)}</div>
+        <div class="chips cfg-chips">
+          ${subs.map((s, i) => `<span class="chip">${esc(s)}<i data-subrm="${esc(g)}|${i}">×</i></span>`).join('')}
+          <input class="cfg-add-input" data-subadd="${esc(g)}" placeholder="+ 추가 후 Enter">
+        </div>
+      </div>`).join('');
+    subEdit.querySelectorAll('[data-subrm]').forEach(b => b.addEventListener('click', () => {
+      const [g, i] = b.dataset.subrm.split('|'); cfgSub[g].splice(Number(i), 1); drawSub();
+    }));
+    subEdit.querySelectorAll('[data-subadd]').forEach(inp => inp.addEventListener('keydown', e => {
+      if (e.key !== 'Enter') return; e.preventDefault();
+      const v = inp.value.trim(); if (!v) return;
+      const g = inp.dataset.subadd;
+      if (Object.values(cfgSub).flat().includes(v)) return toast('이미 있는 구분입니다', true);
+      cfgSub[g].push(v); drawSub();
+      subEdit.querySelector(`[data-subadd="${CSS.escape(g)}"]`)?.focus();
+    }));
+  }
+  drawSub();
+
+  // --- 체크리스트 옵션 편집 ---
+  const optEdit = $('#optEdit', root);
+  function drawOpt() {
+    optEdit.innerHTML = Object.entries(cfgOpts).map(([k, opts]) => {
+      const used = optUsage[k] || [];
+      const label = used.length ? `${used.slice(0, 3).map(esc).join(', ')}${used.length > 3 ? ' 외' : ''}` : esc(k);
+      return `
+      <div class="cfg-group">
+        <div class="cfg-group-name">${label} <span class="t-muted" style="font-weight:400">(${esc(k)})</span></div>
+        <div class="chips cfg-chips">
+          ${opts.map((s, i) => `<span class="chip">${esc(s)}${i === 0 ? ' <b class="cfg-def">기본</b>' : ''}<i data-optrm="${esc(k)}|${i}">×</i></span>`).join('')}
+          <input class="cfg-add-input" data-optadd="${esc(k)}" placeholder="+ 추가 후 Enter">
+        </div>
+      </div>`;
+    }).join('');
+    optEdit.querySelectorAll('[data-optrm]').forEach(b => b.addEventListener('click', () => {
+      const [k, i] = b.dataset.optrm.split('|');
+      if (cfgOpts[k].length <= 1) return toast('최소 1개는 남겨야 합니다', true);
+      cfgOpts[k].splice(Number(i), 1); drawOpt();
+    }));
+    optEdit.querySelectorAll('[data-optadd]').forEach(inp => inp.addEventListener('keydown', e => {
+      if (e.key !== 'Enter') return; e.preventDefault();
+      const v = inp.value.trim(); if (!v) return;
+      const k = inp.dataset.optadd;
+      if (cfgOpts[k].includes(v)) return toast('이미 있는 옵션입니다', true);
+      cfgOpts[k].push(v); drawOpt();
+      optEdit.querySelector(`[data-optadd="${CSS.escape(k)}"]`)?.focus();
+    }));
+  }
+  drawOpt();
+
+  $('#saveCfg', root).addEventListener('click', async () => {
+    try {
+      const res = await api('POST', '/config', { subcategories: cfgSub, opts: cfgOpts });
+      applyConfig(res);
+      toast('설정이 저장되었습니다'); closeModal(); render();
+    } catch (e) { toast(e.message, true); }
   });
 }
