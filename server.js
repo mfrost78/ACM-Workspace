@@ -561,17 +561,17 @@ app.get('/api/calendar', requireAuth, wrap(async (req, res) => {
   const mine = req.query.mine === '1';
   const mineP = mine ? [req.user.id] : [];
   const mineSqlP = mine ? `AND p.assignee_id = ?` : '';
-  const mineSqlT = mine ? `AND t.assignee_id = ?` : '';
   // 4개 소스(입사/퇴사/프로젝트/업무)를 병렬 조회 — 원격 DB 왕복 최소화
+  // 업무는 복수 담당자라 mine 필터를 JS에서 처리 (assignee_ids 멤버십)
   const [onb, ofb, projs, tks] = await Promise.all([
     q(`SELECT id, name, join_date, category, state, tasks FROM onboarding WHERE join_date <> ''`),
     q(`SELECT id, name, leave_date, category, state FROM offboarding WHERE leave_date <> ''`),
     q(`SELECT p.id, p.title, p.target_date, p.category, p.status, p.done_date, p.archived_at, p.updated_at, p.assignee_id, u.name AS assignee, u.color AS assignee_color
          FROM projects p LEFT JOIN users u ON u.id = p.assignee_id
         WHERE p.target_date <> '' AND p.status <> '취소' ${mineSqlP}`, mineP),
-    q(`SELECT t.id, t.project_id, t.title, t.target_date, t.category, t.status, t.done_date, t.archived_at, t.updated_at, t.recurring_rule_id, t.assignee_id, u.name AS assignee, u.color AS assignee_color
+    q(`SELECT t.id, t.project_id, t.title, t.target_date, t.category, t.status, t.done_date, t.archived_at, t.updated_at, t.recurring_rule_id, t.assignee_id, t.assignee_ids, u.name AS assignee, u.color AS assignee_color
          FROM tasks t LEFT JOIN users u ON u.id = t.assignee_id
-        WHERE t.target_date <> '' AND t.status <> '취소' ${mineSqlT}`, mineP),
+        WHERE t.target_date <> '' AND t.status <> '취소'`),
   ]);
   for (const o of onb) {
     if (from && o.join_date < from) continue;
@@ -605,9 +605,12 @@ app.get('/api/calendar', requireAuth, wrap(async (req, res) => {
   }
   for (const t of tks) {
     if (isArchivedRow(t, today)) continue;
+    const ids = taskAssignees(t);
+    if (mine && !ids.includes(req.user.id)) continue;   // 복수 담당자 멤버십
     if (from && t.target_date < from) continue;
     if (to && t.target_date > to) continue;
-    events.push({ type: 'task', id: t.id, project_id: t.project_id, date: t.target_date, title: t.title, category: t.category, state: t.status, assignee: t.assignee, assignee_color: t.assignee_color, recurring: !!t.recurring_rule_id });
+    const asg = t.assignee ? (ids.length > 1 ? `${t.assignee} 외 ${ids.length - 1}` : t.assignee) : '';
+    events.push({ type: 'task', id: t.id, project_id: t.project_id, date: t.target_date, title: t.title, category: t.category, state: t.status, assignee: asg, assignee_color: t.assignee_color, recurring: !!t.recurring_rule_id });
   }
   res.json(events);
 }));
@@ -624,29 +627,35 @@ app.get('/api/dashboard', requireAuth, wrap(async (req, res) => {
     cnt(`SELECT COUNT(*)::int c FROM employees WHERE status='휴직'`),
     cnt(`SELECT COUNT(*)::int c FROM onboarding WHERE state='진행중'`),
     cnt(`SELECT COUNT(*)::int c FROM offboarding WHERE state='진행중'`),
-    // 진행중 업무 전체를 한 번에 가져와 JS 집계 (pg-mem 호환 + 담당자별/지연/임박 동시 계산)
-    q(`SELECT t.id, t.title, t.target_date, t.priority, t.category, t.subcategory, t.status, t.assignee_id, t.recurring_rule_id,
+    // 진행중 업무 전체를 한 번에 가져와 JS 집계 (pg-mem 호환 + 담당자별/지연/임박/중요도 동시 계산)
+    q(`SELECT t.id, t.title, t.target_date, t.priority, t.category, t.subcategory, t.status, t.assignee_id, t.assignee_ids, t.recurring_rule_id,
               u.name AS assignee_name, u.color AS assignee_color
          FROM tasks t LEFT JOIN users u ON u.id = t.assignee_id
         WHERE t.status = '진행중'`),
     q(`SELECT id, name, color FROM users ORDER BY id`),
-    q(`SELECT f.id, f.task_id, f.content, f.created_at, t.title AS task_title, u.name AS author
+    q(`SELECT f.id, f.task_id, f.content, f.created_at, f.created_by AS author_id, t.title AS task_title, t.assignee_ids AS task_assignees, u.name AS author
          FROM task_followups f LEFT JOIN tasks t ON t.id = f.task_id LEFT JOIN users u ON u.id = f.created_by
         ORDER BY f.id DESC LIMIT 8`),
-    q(`SELECT t.id, t.title, t.updated_at, u.name AS assignee_name
+    q(`SELECT t.id, t.title, t.updated_at, t.assignee_ids AS task_assignees, u.name AS assignee_name
          FROM tasks t LEFT JOIN users u ON u.id = t.assignee_id
         WHERE t.status = '완료' ORDER BY t.updated_at DESC LIMIT 8`),
   ]);
+  const myId = req.user.id;
   const taskOpen = open.length;
-  const myTaskOpen = open.filter(t => t.assignee_id === req.user.id).length;
+  const myTaskOpen = open.filter(t => taskAssignees(t).includes(myId)).length;
   const smap = {};
   for (const u of users) smap[u.id] = { user_id: u.id, name: u.name, color: u.color, open: 0, overdue: 0, dueWeek: 0 };
   const unassigned = { user_id: null, name: '미지정', color: '#8e8e93', open: 0, overdue: 0, dueWeek: 0 };
+  // 복수 담당자: 각 담당자에게 분배 집계 (부하 분포 시각화용)
+  const prioStats = {}; for (const p of TODO_PRIORITY) prioStats[p] = 0;
   for (const t of open) {
-    const s = smap[t.assignee_id] || unassigned;
-    s.open++;
-    if (t.target_date && t.target_date < today) s.overdue++;
-    else if (t.target_date && t.target_date <= weekEnd) s.dueWeek++;
+    prioStats[t.priority] = (prioStats[t.priority] || 0) + 1;
+    const targets = taskAssignees(t);
+    for (const s of (targets.length ? targets.map(id => smap[id] || unassigned) : [unassigned])) {
+      s.open++;
+      if (t.target_date && t.target_date < today) s.overdue++;
+      else if (t.target_date && t.target_date <= weekEnd) s.dueWeek++;
+    }
   }
   const taskStats = [...users.map(u => smap[u.id]), unassigned].filter(s => s.open > 0);
 
@@ -656,13 +665,15 @@ app.get('/api/dashboard', requireAuth, wrap(async (req, res) => {
     .sort((a, b) => a.target_date.localeCompare(b.target_date)).slice(0, 8);
   const taskOverdue = open.filter(t => t.target_date && t.target_date < today).length;
 
-  // 최근 업무 업데이트 피드: F/U + 최근 완료 업무 (위 병렬 조회분 사용)
+  // 최근 업무 업데이트 피드: F/U + 최근 완료 업무 (위 병렬 조회분 사용). mine = 내 담당/내 작성
   const taskFeed = [
-    ...fus.map(f => ({ kind: 'fu', task_id: f.task_id, title: f.task_title, text: f.content, who: f.author, at: f.created_at })),
-    ...dones.map(d => ({ kind: 'done', task_id: d.id, title: d.title, text: '업무 완료', who: d.assignee_name, at: d.updated_at })),
+    ...fus.map(f => ({ kind: 'fu', task_id: f.task_id, title: f.task_title, text: f.content, who: f.author, at: f.created_at,
+                       mine: f.author_id === myId || toIdArray(f.task_assignees).includes(myId) })),
+    ...dones.map(d => ({ kind: 'done', task_id: d.id, title: d.title, text: '업무 완료', who: d.assignee_name, at: d.updated_at,
+                         mine: toIdArray(d.task_assignees).includes(myId) })),
   ].sort((a, b) => new Date(b.at) - new Date(a.at)).slice(0, 8);
 
-  res.json({ empActive, empLeave, onbOpen, ofbOpen, taskOpen, myTaskOpen, taskOverdue, taskStats, overdueTasks, dueSoonTasks, taskFeed });
+  res.json({ empActive, empLeave, onbOpen, ofbOpen, taskOpen, myTaskOpen, taskOverdue, prioStats, taskStats, overdueTasks, dueSoonTasks, taskFeed });
 }));
 
 app.get('/api/activity', requireAuth, wrap(async (req, res) => {
@@ -685,6 +696,27 @@ function validTodo({ status, priority }) {
   return null;
 }
 const normAssignee = (v) => (v === undefined || v === null || v === '' ? null : Number(v));
+
+// jsonb/문자열/배열 어떤 형태로 와도 양수 정수 id 배열로 정규화
+function toIdArray(v) {
+  if (Array.isArray(v)) return [...new Set(v.map(Number).filter(n => Number.isInteger(n) && n > 0))];
+  if (typeof v === 'string' && v.trim()) {
+    try { const a = JSON.parse(v); if (Array.isArray(a)) return toIdArray(a); } catch { /* CSV 폴백 */ }
+    return toIdArray(v.split(','));
+  }
+  return [];
+}
+// 입력 본문에서 담당자 id 목록 추출 (assignee_ids 우선, 없으면 단일 assignee_id 호환)
+function normIds(b) {
+  let raw = b.assignee_ids;
+  if ((raw === undefined || raw === null || raw === '') && b.assignee_id !== undefined && b.assignee_id !== null && b.assignee_id !== '') raw = [b.assignee_id];
+  return toIdArray(raw);
+}
+// task row의 담당자 id 목록 (assignee_ids 우선, 레거시 단일 assignee_id 폴백)
+function taskAssignees(t) {
+  const ids = toIdArray(t.assignee_ids);
+  return ids.length ? ids : (t.assignee_id ? [t.assignee_id] : []);
+}
 
 /* --- Projects --- */
 app.get('/api/projects', requireAuth, wrap(async (req, res) => {
@@ -778,18 +810,20 @@ app.get('/api/tasks', requireAuth, wrap(async (req, res) => {
   rows = rows.filter(r => isArchivedRow(r, today) === showArchived);
   const cmap = {}, lastMap = {};
   for (const f of fus) { cmap[f.task_id] = (cmap[f.task_id] || 0) + 1; lastMap[f.task_id] = f.content; }
-  for (const r of rows) { r.fu_count = cmap[r.id] || 0; r.last_fu = lastMap[r.id] || ''; }
+  for (const r of rows) { r.fu_count = cmap[r.id] || 0; r.last_fu = lastMap[r.id] || ''; r.assignee_ids = taskAssignees(r); }
   res.json(rows);
 }));
 
-const TASK_FIELDS = ['project_id', 'category', 'subcategory', 'priority', 'title', 'content', 'start_date', 'target_date', 'done_date', 'status', 'assignee_id'];
+const TASK_FIELDS = ['project_id', 'category', 'subcategory', 'priority', 'title', 'content', 'start_date', 'target_date', 'done_date', 'status', 'assignee_id', 'assignee_ids'];
 app.post('/api/tasks', requireAuth, wrap(async (req, res) => {
   const b = req.body || {};
   if (!b.title || !b.subcategory) return res.status(400).json({ error: '제목·구분은 필수입니다.' });
   if (!ALL_SUBCATS.has(b.subcategory)) return res.status(400).json({ error: '업무 구분 값이 올바르지 않습니다.' });
   const err = validTodo(b); if (err) return res.status(400).json({ error: err });
   b.category = SUBCAT_GROUP[b.subcategory];   // 상위 구분 자동 결정
-  const vals = TASK_FIELDS.map(f => f === 'assignee_id' ? normAssignee(b.assignee_id)
+  const ids = normIds(b);   // 복수 담당자 — 대표(assignee_id)는 첫 번째로 동기화
+  const vals = TASK_FIELDS.map(f => f === 'assignee_id' ? (ids[0] ?? null)
+    : f === 'assignee_ids' ? JSON.stringify(ids)
     : f === 'project_id' ? (b.project_id ? Number(b.project_id) : null)
     : (b[f] ?? (f === 'status' ? '진행중' : f === 'priority' ? '보통' : '')));
   const ph = TASK_FIELDS.map(() => '?').join(',');
@@ -808,8 +842,12 @@ app.put('/api/tasks/:id', requireAuth, wrap(async (req, res) => {
   if (b.subcategory) b.category = SUBCAT_GROUP[b.subcategory];
   const next = {};
   for (const f of TASK_FIELDS) next[f] = f in b
-    ? (f === 'assignee_id' ? normAssignee(b.assignee_id) : f === 'project_id' ? (b.project_id ? Number(b.project_id) : null) : b[f])
+    ? (f === 'project_id' ? (b.project_id ? Number(b.project_id) : null) : b[f])
     : cur[f];
+  // 복수 담당자 — assignee_ids 또는 assignee_id가 본문에 있으면 갱신, 없으면 기존 유지
+  const ids = ('assignee_ids' in b || 'assignee_id' in b) ? normIds(b) : taskAssignees(cur);
+  next.assignee_id = ids[0] ?? null;
+  next.assignee_ids = JSON.stringify(ids);
   // 완료로 전환 시 완료일 자동 입력 (아카이브 자동 판정 기준)
   if (next.status === '완료' && cur.status !== '완료' && !next.done_date) next.done_date = kstTodayStr();
   await run(`UPDATE tasks SET ${TASK_FIELDS.map(f => `${f}=?`).join(',')}, updated_at=now() WHERE id=?`,

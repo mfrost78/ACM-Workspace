@@ -582,4 +582,94 @@ table.xls-tbl .cell-select.tone-na   { background-color: var(--tone-na-bg);   co
   .rel-conn { display: none; }
   .dash-grid2 { grid-template-columns: 1fr; }
   .quick-add { flex-wrap: wrap; }
+  .stat-grid-4 { grid-template-columns: 1fr 1fr; }
+  .wk-strip { grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 3px; }
+  .dash-team-wrap { flex-direction: column; align-items: stretch; }
 }
+
+/* ============ 추가: 대시보드 개편 ============ */
+/* 상단 4카드 */
+.stat-grid-4 { grid-template-columns: repeat(4, 1fr); }
+.brand { background: none; }
+.brand.active .name { color: var(--accent); }
+/* 입/퇴사 분할 카드 */
+.stat-split { display: flex; align-items: stretch; padding: 0; overflow: hidden; }
+.stat-split .ss-part { flex: 1; padding: 18px 18px; cursor: pointer; transition: background .12s; }
+.stat-split .ss-part:hover { background: var(--bg-hover); }
+.stat-split .ss-div { width: 1px; background: var(--border); flex-shrink: 0; }
+
+/* 금주 일정 스트립 */
+.wk-card { margin-bottom: 18px; }
+.wk-strip { display: grid; grid-template-columns: repeat(7, 1fr); gap: 6px; }
+.wk-day { background: var(--surface); border: 1px solid var(--border); min-height: 90px; padding: 6px 7px; display: flex; flex-direction: column; gap: 4px; }
+.wk-day.today { box-shadow: inset 0 0 0 2px var(--brand-strong); }
+.wk-dh { display: flex; align-items: baseline; gap: 5px; }
+.wk-dow { font-size: 11px; font-weight: 600; color: var(--text-3); }
+.wk-num { font-size: 13.5px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.wk-day.sun .wk-dow, .wk-day.sun .wk-num { color: var(--red); }
+.wk-day.sat .wk-dow, .wk-day.sat .wk-num { color: var(--accent); }
+.wk-evs { display: flex; flex-direction: column; gap: 3px; }
+.wk-ev { font-size: 10.5px; font-weight: 600; padding: 2px 5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
+.wk-ev.tk { background: var(--brand-soft); color: var(--accent); box-shadow: inset 2px 0 0 0 var(--brand); }
+.wk-ev.hr { background: rgba(255,149,0,.16); color: #b15c00; box-shadow: inset 2px 0 0 0 var(--orange); }
+.wk-none { color: var(--text-3); font-size: 12px; text-align: center; }
+
+/* 팀 현황 — 중요도 도넛 + 담당자 부하 */
+.dash-team-wrap { display: flex; gap: 18px; padding: 12px 16px; align-items: center; }
+.donut-box { display: flex; flex-direction: column; align-items: center; gap: 8px; flex: 0 0 auto; }
+.donut { width: 132px; height: 132px; }
+.donut-num { font-size: 28px; font-weight: 600; fill: var(--text); }
+.donut-lbl { font-size: 11px; fill: var(--text-3); }
+.donut-legend { display: flex; flex-wrap: wrap; gap: 4px 10px; justify-content: center; max-width: 150px; font-size: 11.5px; color: var(--text-2); }
+.dl-item { display: inline-flex; align-items: center; gap: 4px; }
+.dl-item i { width: 9px; height: 9px; display: inline-block; }
+.dash-team { flex: 1; min-width: 180px; }
+
+/* ============ 추가: 복수 담당자 ============ */
+.asg.multi { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.asg-tag { display: inline-flex; align-items: center; white-space: nowrap; }
+.asg-picker { display: flex; flex-wrap: wrap; gap: 6px; }
+.asg-opt { display: inline-flex; align-items: center; gap: 5px; padding: 6px 11px; font-size: 12.5px; cursor: pointer;
+  background: var(--surface-2); border: 1px solid var(--border); color: var(--text-2); }
+.asg-opt input { display: none; }
+.asg-opt.on { background: var(--brand-soft); color: var(--accent); border-color: var(--brand); font-weight: 600; }
+
+/* ============ 추가: 업무 리스트 1줄 고정 ============ */
+.todo-list { gap: 10px; }
+.proj-head { padding: 9px 16px; }
+.task-rows { padding-left: 0; }
+.task-row { flex-wrap: nowrap; gap: 10px; height: 40px; padding: 0 14px 0 16px; overflow: hidden; }
+.task-row .task-name { flex: 0 1 auto; min-width: 120px; max-width: 340px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.task-row .asg.multi { flex: 0 0 auto; max-width: 220px; overflow: hidden; flex-wrap: nowrap; }
+.task-row .tr-date { flex-shrink: 0; font-size: 12px; font-variant-numeric: tabular-nums; }
+.task-row .pill.sub, .task-row .prio, .task-row .dday { flex-shrink: 0; }
+
+/* ============ 추가: 캘린더 색 구분 ============ */
+.cal-cell-head { display: flex; align-items: center; justify-content: space-between; }
+.cal-add { width: 18px; height: 18px; font-size: 13px; line-height: 1; color: var(--text-3); display: grid; place-items: center; opacity: 0; transition: opacity .12s, background .12s; }
+.cal-cell:hover .cal-add { opacity: 1; }
+.cal-add:hover { background: var(--brand-soft); color: var(--accent); }
+.cal-ev { justify-content: space-between; }
+.cal-ev-t { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cal-ev-asg { font-size: 10.5px; font-weight: 600; opacity: .85; flex-shrink: 0; margin-left: 6px; }
+.cal-ev.tk { background: var(--brand-soft); color: var(--accent); box-shadow: inset 3px 0 0 0 var(--brand); }
+.cal-ev.hr { background: rgba(255,149,0,.18); color: #b15c00; box-shadow: inset 3px 0 0 0 var(--orange); }
+.legend .dot.in, .legend .dot.out, .legend .dot.eval { background: var(--orange); }
+.legend .dot.task { background: var(--brand); }
+
+/* ============ 직각 디자인 — 박스/입력/버튼 모서리 제거 ============ */
+.btn, .btn-sm, .input, .select, textarea.input,
+.card, .stat, .stat-split, .login-card, .modal,
+.seg, .seg button, .quick-add, .quick-add .input, .quick-add .select, .quick-add .btn-primary,
+.kb-col, .kb-card, .kb-cnt, .proj-block, .cal-cell, .wk-day, .wk-ev,
+.rel-proj, .rel-task, .timeline, .nav-item, .nav-toggle, .nav-menu, .nav-menu-item,
+.icon-btn, .team-bar, .team-bar i, .toast, .suggest-list, .check-item, .static,
+.cell-input, .cell-select, .inline-st, .color-input, .fu-item, .rule-item,
+.dash-task, .feed-item, .asg-opt, .asg-tag, .prog .bar, .toolbar .input, .toolbar .select,
+.dl-item i, .cal-add, .modal-head .x, .empty .btn {
+  border-radius: 0 !important;
+}
+/* 작은 태그류는 가독성 위해 살짝만 (직각에 가깝게) */
+.pill, .prio, .dday, .chip, .fu-chip, .cal-ev, .wk-ev { border-radius: 2px !important; }
+/* 원형 유지: 아바타·색점·뱃지 카운트·색상 스와치 */
+.avatar, .udot, .dot, .color-swatch, .nav-item .badge, .nav-menu-item .badge { border-radius: 50% !important; }

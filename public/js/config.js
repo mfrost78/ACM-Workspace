@@ -162,6 +162,10 @@ export const TASK_SUBCATEGORIES = {
 export const TODO_STATUS_TONE = { '진행중': 'todo', '완료': 'done', '취소': 'na' };
 // 중요도 → 색상 톤(badge)
 export const PRIORITY_TONE = { '초비상': 'crit', '우선': 'high', '보통': 'mid', '여유': 'low' };
+// 중요도 정렬 순서(낮을수록 우선) — 리스트/타임라인 정렬용
+export const PRIORITY_ORDER = { '초비상': 0, '우선': 1, '보통': 2, '여유': 3 };
+// 중요도별 대표색 — 대시보드 도넛 차트용
+export const PRIORITY_COLOR = { '초비상': '#e0483f', '우선': '#e08a2e', '보통': '#4577d4', '여유': '#9aa0a6' };
 
 // 정기(반복) 업무 주기
 export const RECUR_FREQ = [['weekly', '매주'], ['monthly', '매월'], ['yearly', '매년']];
