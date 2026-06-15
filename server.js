@@ -96,12 +96,41 @@ async function pushNotif({ userId, type, title, body, taskId, actor }) {
     `INSERT INTO notifications (user_id, type, title, body, task_id, actor_id, actor_name) VALUES (?, ?, ?, ?, ?, ?, ?)`,
     [userId, type, title, body ?? '', taskId ?? null, actor?.id ?? null, actor?.name ?? '']);
 }
-// 업무 배정/변경 알림 — assigned: 새로 배정된 담당자, updated: 기존 담당자(내용 변경 시)
-async function notifyTask({ assigned = [], updated = [], task, taskId, actor }) {
+// 업무 담당자 지정/변경 알림 — assigned: 새로 배정된 담당자, unassigned: 담당에서 제외된 담당자
+async function notifyTask({ assigned = [], unassigned = [], task, taskId, actor }) {
   const jobs = [];
   for (const uid of assigned) jobs.push(pushNotif({ userId: uid, type: 'task_assigned', title: '새 업무가 배정되었습니다', body: task.title, taskId, actor }));
-  for (const uid of updated) jobs.push(pushNotif({ userId: uid, type: 'task_updated', title: '담당 업무가 변경되었습니다', body: `${task.title} · ${task.status || ''}`.trim(), taskId, actor }));
+  for (const uid of unassigned) jobs.push(pushNotif({ userId: uid, type: 'task_unassigned', title: '업무 담당에서 제외되었습니다', body: task.title, taskId, actor }));
   await Promise.all(jobs);
+}
+
+// 마감 임박 알림 — 진행중 + 목표일이 오늘~+DUE_LEAD_DAYS 이내인 업무의 담당자에게 1회 알림.
+// 서버리스 cron이 없어 GET 진입 시 lazy 생성(스로틀). due_notified_for로 목표일당 1회만 발송.
+const DUE_LEAD_DAYS = 3;
+const DUE_THROTTLE_MS = 5 * 60 * 1000;
+let _dueNextAt = 0;
+async function generateDueNotifications() {
+  if (Date.now() < _dueNextAt) return;
+  _dueNextAt = Date.now() + DUE_THROTTLE_MS;
+  const today = kstTodayStr();
+  const limit = addDays(today, DUE_LEAD_DAYS);
+  const rows = await q(
+    `SELECT id, title, target_date, assignee_ids, assignee_id FROM tasks
+      WHERE status = '진행중' AND target_date <> '' AND target_date >= ? AND target_date <= ?
+        AND archived_at IS NULL
+        AND (due_notified_for IS NULL OR due_notified_for <> target_date)`, [today, limit]);
+  for (const t of rows) {
+    // 선점(서버리스 다중 인스턴스 중복 발송 방지) — 목표일 마킹에 성공한 인스턴스만 발송
+    const claim = await run(
+      `UPDATE tasks SET due_notified_for = ? WHERE id = ? AND (due_notified_for IS NULL OR due_notified_for <> ?)`,
+      [t.target_date, t.id, t.target_date]);
+    if (!claim.rowCount) continue;
+    const dleft = Math.round((new Date(t.target_date + 'T00:00:00Z') - new Date(today + 'T00:00:00Z')) / 86400000);
+    const dtxt = dleft <= 0 ? 'D-DAY' : `D-${dleft}`;
+    for (const uid of taskAssignees(t)) {
+      await pushNotif({ userId: uid, type: 'task_due', title: `마감 임박 (${dtxt})`, body: t.title, taskId: t.id });
+    }
+  }
 }
 
 // KST 기준 오늘 날짜 ('YYYY-MM-DD')
@@ -579,6 +608,7 @@ app.get('/api/calendar', requireAuth, wrap(async (req, res) => {
   const { from, to } = req.query;
   const events = [];
   await generateRecurringTasks();   // 정기 업무 도래분 lazy 생성 (스로틀 적용 — 대개 no-op)
+  bg(generateDueNotifications());   // 마감 임박 알림 lazy 발송 (스로틀)
   const today = kstTodayStr();
   const mine = req.query.mine === '1';
   const mineP = mine ? [req.user.id] : [];
@@ -641,6 +671,7 @@ app.get('/api/calendar', requireAuth, wrap(async (req, res) => {
 app.get('/api/dashboard', requireAuth, wrap(async (req, res) => {
   bg(autoCompleteDueOnboarding(req.user));
   await generateRecurringTasks();
+  bg(generateDueNotifications());   // 마감 임박 알림 lazy 발송 (스로틀)
   const today = kstTodayStr(), weekEnd = addDays(today, 7);
   const cnt = async (sql, p = []) => (await one(sql, p)).c;
   // 모든 독립 쿼리를 한 번에 병렬 실행 — 원격 DB 왕복 횟수 최소화
@@ -817,6 +848,7 @@ app.delete('/api/projects/:id', requireAuth, wrap(async (req, res) => {
 /* --- Tasks (하위업무) --- */
 app.get('/api/tasks', requireAuth, wrap(async (req, res) => {
   await generateRecurringTasks();   // 정기 업무 도래분 lazy 생성
+  bg(generateDueNotifications());   // 마감 임박 알림 lazy 발송 (스로틀)
   const { status, category, project_id } = req.query;
   const mine = req.query.mine === '1';
   const where = [], params = [];
@@ -885,12 +917,10 @@ app.put('/api/tasks/:id', requireAuth, wrap(async (req, res) => {
   await run(`UPDATE tasks SET ${TASK_FIELDS.map(f => `${f}=?`).join(',')}, updated_at=now() WHERE id=?`,
     [...TASK_FIELDS.map(f => next[f]), id]);
   logAct({ userId: req.user.id, userName: req.user.name, action: '업무 수정', targetType: 'task', targetId: id, detail: next.title });
-  // 알림: 새로 배정된 담당자 / 내용이 바뀐 경우 기존 담당자
-  const meaningful = ['title', 'content', 'start_date', 'target_date', 'done_date', 'status', 'priority', 'subcategory'];
-  const changed = meaningful.some(f => String(cur[f] ?? '') !== String(next[f] ?? ''));
+  // 알림: 담당자 지정/변경만 — 새로 배정된 담당자 / 담당에서 제외된 담당자
   const added = ids.filter(i => !oldIds.includes(i));
-  const kept = ids.filter(i => oldIds.includes(i));
-  bg(notifyTask({ assigned: added, updated: changed ? kept : [], task: next, taskId: id, actor: req.user }));
+  const removed = oldIds.filter(i => !ids.includes(i));
+  bg(notifyTask({ assigned: added, unassigned: removed, task: next, taskId: id, actor: req.user }));
   res.json({ ok: true });
 }));
 
