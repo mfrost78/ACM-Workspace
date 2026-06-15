@@ -2342,6 +2342,32 @@ function bkFilename(d = new Date()) {
   const p = n => String(n).padStart(2, '0');
   return `backup_${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}_${p(d.getHours())}${p(d.getMinutes())}.json`;
 }
+
+// --- 백업 암호화(AES-GCM 256 / PBKDF2-SHA256) ---
+const b64 = (u8) => { let s = ''; for (const b of u8) s += String.fromCharCode(b); return btoa(s); };
+const ub64 = (s) => { const bin = atob(s); const u8 = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i); return u8; };
+async function bkDeriveKey(passphrase, salt) {
+  const km = await crypto.subtle.importKey('raw', new TextEncoder().encode(passphrase), 'PBKDF2', false, ['deriveKey']);
+  return crypto.subtle.deriveKey({ name: 'PBKDF2', salt, iterations: 150000, hash: 'SHA-256' },
+    km, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
+}
+async function bkEncrypt(obj, passphrase) {
+  const salt = crypto.getRandomValues(new Uint8Array(16)), iv = crypto.getRandomValues(new Uint8Array(12));
+  const key = await bkDeriveKey(passphrase, salt);
+  const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, new TextEncoder().encode(JSON.stringify(obj)));
+  return { app: 'hr-workspace', enc: 'aes-gcm-256', kdf: 'pbkdf2-sha256', iter: 150000, salt: b64(salt), iv: b64(iv), ct: b64(new Uint8Array(ct)) };
+}
+async function bkDecrypt(env, passphrase) {
+  const key = await bkDeriveKey(passphrase, ub64(env.salt));
+  const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: ub64(env.iv) }, key, ub64(env.ct));
+  return JSON.parse(new TextDecoder().decode(pt));
+}
+const isEncryptedBackup = (o) => o && o.enc === 'aes-gcm-256' && o.ct && o.salt && o.iv;
+// 백업 데이터 → 저장 문자열(패스프레이즈 설정 시 암호화)
+async function serializeBackup(data) {
+  const pass = await bkGet('bkPass').catch(() => null);
+  return JSON.stringify(pass ? await bkEncrypt(data, pass) : data);
+}
 async function bkPrune(handle, keep = BACKUP_KEEP) {
   const names = [];
   for await (const [name, entry] of handle.entries()) if (entry.kind === 'file' && /^backup_.*\.json$/.test(name)) names.push(name);
@@ -2351,7 +2377,7 @@ async function bkPrune(handle, keep = BACKUP_KEEP) {
 async function runBackup(handle) {
   const data = await api('GET', '/backup');
   const fh = await handle.getFileHandle(bkFilename(), { create: true });
-  const w = await fh.createWritable(); await w.write(JSON.stringify(data)); await w.close();
+  const w = await fh.createWritable(); await w.write(await serializeBackup(data)); await w.close();
   await bkPrune(handle);
   localStorage.setItem(LAST_BACKUP_KEY, new Date().toISOString());
 }
@@ -2368,7 +2394,7 @@ async function maybeAutoBackup() {
 }
 async function downloadBackupJSON() {
   const data = await api('GET', '/backup');
-  const url = URL.createObjectURL(new Blob([JSON.stringify(data)], { type: 'application/json' }));
+  const url = URL.createObjectURL(new Blob([await serializeBackup(data)], { type: 'application/json' }));
   const a = document.createElement('a'); a.href = url; a.download = bkFilename(); document.body.appendChild(a); a.click(); a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
@@ -2487,6 +2513,15 @@ function openSettings() {
   async function drawBackup() {
     const handle = BACKUP_SUPPORTED ? await bkGet('dirHandle').catch(() => null) : null;
     const last = localStorage.getItem(LAST_BACKUP_KEY);
+    const encOn = !!(await bkGet('bkPass').catch(() => null));
+    const encBlock = `
+      <div class="cfg-chips" style="gap:14px;margin-top:10px"><span>백업 암호화: <b>${encOn ? '🔒 사용 중' : '미사용'}</b></span></div>
+      <div class="link-add" style="margin-top:6px;flex-wrap:wrap">
+        <input class="input" type="password" id="bkPassInput" placeholder="암호화 패스프레이즈(4자+)" style="max-width:220px" autocomplete="new-password">
+        <button class="btn btn-sm" type="button" id="bkEncApply">암호화 적용</button>
+        ${encOn ? '<button class="btn btn-sm" type="button" id="bkEncOff">암호화 해제</button>' : ''}
+      </div>
+      <p class="t-muted" style="font-size:11.5px;margin:6px 0 0">⚠️ 암호화하면 복원 시 동일한 패스프레이즈가 필요합니다. 패스프레이즈는 백업 파일과 <b>별도로</b> 안전하게 보관하세요(분실 시 복원 불가).</p>`;
     backupBox.innerHTML = `
       ${BACKUP_SUPPORTED ? `<p class="t-muted" style="font-size:12px;margin:0 0 8px">백업 폴더를 지정하면 접속 시 하루 1회 자동 저장되고 최근 ${BACKUP_KEEP}개만 보관됩니다(이후 자동 삭제).</p>
       <div class="cfg-chips" style="gap:14px">
@@ -2502,7 +2537,8 @@ function openSettings() {
       <div class="link-add" style="flex-wrap:wrap">
         <button class="btn btn-sm btn-primary" type="button" id="bkDl">JSON 다운로드</button>
         <label class="btn btn-sm" style="cursor:pointer">복원<input type="file" id="bkRestore" accept=".json,application/json" hidden></label>
-      </div>`}`;
+      </div>`}
+      ${encBlock}`;
 
     $('#bkPick', backupBox)?.addEventListener('click', async () => {
       try { const h = await window.showDirectoryPicker({ mode: 'readwrite' }); await bkSet('dirHandle', h); toast('백업 폴더가 지정되었습니다'); await drawBackup(); }
@@ -2516,11 +2552,26 @@ function openSettings() {
       } catch (e) { toast('백업 실패: ' + e.message, true); }
     });
     $('#bkDl', backupBox)?.addEventListener('click', () => downloadBackupJSON().catch(e => toast(e.message, true)));
+    $('#bkEncApply', backupBox)?.addEventListener('click', async () => {
+      const v = $('#bkPassInput', backupBox).value;
+      if (!v || v.length < 4) return toast('패스프레이즈를 4자 이상 입력하세요', true);
+      await bkSet('bkPass', v); toast('이후 백업이 암호화됩니다'); await drawBackup();
+    });
+    $('#bkEncOff', backupBox)?.addEventListener('click', async () => {
+      if (!confirm('암호화를 해제하면 이후 백업은 평문으로 저장됩니다. 계속할까요?')) return;
+      await bkSet('bkPass', null); toast('백업 암호화를 해제했습니다'); await drawBackup();
+    });
     $('#bkRestore', backupBox)?.addEventListener('change', async (e) => {
       const file = e.target.files?.[0]; if (!file) return;
       if (!confirm('현재 모든 데이터를 선택한 백업 파일 내용으로 덮어씁니다.\n이 작업은 되돌릴 수 없으며, 복원 후 다시 로그인해야 합니다. 계속할까요?')) { e.target.value = ''; return; }
       try {
-        const data = JSON.parse(await file.text());
+        let data = JSON.parse(await file.text());
+        if (isEncryptedBackup(data)) {
+          const pass = (await bkGet('bkPass').catch(() => null)) || prompt('암호화된 백업입니다. 패스프레이즈를 입력하세요:');
+          if (!pass) { e.target.value = ''; return; }
+          try { data = await bkDecrypt(data, pass); }
+          catch { throw new Error('패스프레이즈가 올바르지 않거나 파일이 손상되었습니다.'); }
+        }
         if (!data || !data.tables) throw new Error('올바른 백업 파일이 아닙니다.');
         await api('POST', '/restore', data);
         closeModal();
