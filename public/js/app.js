@@ -1107,6 +1107,7 @@ async function listView(view, kind) {
 /* ============ 캘린더 ============ */
 let calRef = new Date(); calRef.setDate(1);
 let calMine = false;
+let calTodos = false;   // 세부 To-Do(본인 담당) 표시 토글
 async function viewCalendar(view) {
   view.innerHTML = topbar('캘린더');
   wireTopbar(view);
@@ -1114,7 +1115,10 @@ async function viewCalendar(view) {
   let byDate = {};
 
   async function load() {
-    const events = await api('GET', '/calendar' + (calMine ? '?mine=1' : ''));
+    const qs = new URLSearchParams();
+    if (calMine) qs.set('mine', '1');
+    if (calTodos) qs.set('todos', '1');
+    const events = await api('GET', '/calendar' + (qs.toString() ? '?' + qs.toString() : ''));
     byDate = {};
     for (const e of events) (byDate[e.date] ||= []).push(e);
   }
@@ -1137,11 +1141,13 @@ async function viewCalendar(view) {
           <button class="icon-btn" id="nextM">›</button>
           <button class="btn btn-sm" id="todayBtn">오늘</button>
           <label class="chk-inline"><input type="checkbox" id="calMine" ${calMine ? 'checked' : ''}> 내 업무만</label>
+          <label class="chk-inline"><input type="checkbox" id="calTodos" ${calTodos ? 'checked' : ''}> To-Do 표시</label>
           <div class="spacer"></div>
           <div class="legend">
             <span><span class="dot in"></span>입사예정</span><span><span class="dot out"></span>퇴사예정</span>
             <span><span class="dot eval"></span>평가예정</span><span><span class="dot task"></span>업무 목표일</span>
             <span class="legend-sym">◆ 프로젝트</span><span class="legend-sym">● 개별 업무</span>
+            ${calTodos ? '<span class="legend-sym">☐ 내 To-Do</span>' : ''}
           </div>
         </div>
         <div class="cal-grid">
@@ -1153,6 +1159,11 @@ async function viewCalendar(view) {
               <div class="cal-cell-head"><span class="dnum">${c.date.getDate()}</span>
                 <button class="cal-add" data-add="${ds}" title="이 날짜에 업무 추가">＋</button></div>
               ${evs.map(ev => {
+                if (ev.type === 'todo') {
+                  return `<div class="cal-ev todo ${ev.done ? 'done-state' : ''}" data-type="todo" data-task="${ev.task_id}"
+                    title="${ev.done ? '완료' : '미완료'} · ${esc(ev.title)} — ${esc(ev.task_title || '')}">
+                    <span class="cal-ev-t">${ev.done ? '☑' : '☐'} ${esc(ev.title)}</span></div>`;
+                }
                 const isHr = ev.type === 'onboarding' || ev.type === 'offboarding' || ev.type === 'eval';
                 const pre = ev.type === 'onboarding' ? '입사' : ev.type === 'offboarding' ? '퇴사'
                   : ev.type === 'eval' ? '평가' : (ev.type === 'project' ? '◆' : '●');
@@ -1170,11 +1181,13 @@ async function viewCalendar(view) {
     $('#nextM', body).addEventListener('click', () => { calRef.setMonth(calRef.getMonth() + 1); draw(); });
     $('#todayBtn', body).addEventListener('click', () => { calRef = new Date(); calRef.setDate(1); draw(); });
     $('#calMine', body).addEventListener('change', async e => { calMine = e.target.checked; await load(); draw(); });
+    $('#calTodos', body).addEventListener('change', async e => { calTodos = e.target.checked; await load(); draw(); });
     body.querySelector('.cal-grid').addEventListener('click', e => {
       const add = e.target.closest('[data-add]');
       if (add) { openTaskModal(null, { target_date: add.dataset.add, onSaved: async () => { await load(); draw(); } }); return; }
       const ev = e.target.closest('[data-type]'); if (!ev) return;
       const t = ev.dataset.type, id = Number(ev.dataset.id);
+      if (t === 'todo') { openTaskModal(Number(ev.dataset.task), { onSaved: async () => { await load(); draw(); } }); return; }
       if (t === 'offboarding') openOffboarding(id);
       else if (t === 'onboarding' || t === 'eval') openOnboarding(id);
       else if (t === 'task') openTaskModal(id, { onSaved: async () => { await load(); draw(); } });
@@ -1452,20 +1465,31 @@ async function viewTodo(view) {
       if (sub.hidden) { sub.hidden = false; todoOpen.add(id); }
       sub.querySelector('.todo-add-input')?.focus();
     }));
-    wrap.querySelectorAll('.todo-add-input').forEach(inp => inp.addEventListener('keydown', async ev => {
-      if (ev.key !== 'Enter') return;
-      ev.preventDefault();
-      const content = inp.value.trim(); if (!content) return;
-      const tid = Number(inp.dataset.todoadd);
-      try {
-        const td = await api('POST', `/tasks/${tid}/todos`, { content });
-        const tmp = document.createElement('div'); tmp.innerHTML = todoLineHTML(td);
-        const line = tmp.firstElementChild;
-        inp.closest('.todo-add').insertAdjacentElement('beforebegin', line);
-        bindTodoLine(line);
-        inp.value = ''; inp.focus();
-      } catch (e) { toast(e.message, true); }
-    }));
+    // 빈 입력으로 펼쳤다가 추가 없이 벗어나면 펼친 줄을 접는다(실제 To-Do가 하나도 없을 때만)
+    function collapseIfEmpty(inp) {
+      const sub = inp.closest('.todo-sub'); if (!sub) return;
+      const id = Number(inp.dataset.todoadd);
+      if (!inp.value.trim() && !sub.querySelector('.todo-line')) { inp.value = ''; sub.hidden = true; todoOpen.delete(id); }
+    }
+    wrap.querySelectorAll('.todo-add-input').forEach(inp => {
+      inp.addEventListener('keydown', async ev => {
+        if (ev.key === 'Escape') { ev.preventDefault(); inp.value = ''; collapseIfEmpty(inp); return; }
+        if (ev.key !== 'Enter') return;
+        ev.preventDefault();
+        const content = inp.value.trim(); if (!content) return;
+        const tid = Number(inp.dataset.todoadd);
+        try {
+          const td = await api('POST', `/tasks/${tid}/todos`, { content });
+          const tmp = document.createElement('div'); tmp.innerHTML = todoLineHTML(td);
+          const line = tmp.firstElementChild;
+          inp.closest('.todo-add').insertAdjacentElement('beforebegin', line);
+          bindTodoLine(line);
+          inp.value = ''; inp.focus();
+        } catch (e) { toast(e.message, true); }
+      });
+      // 추가 버튼 클릭 등으로 인한 blur와 충돌하지 않도록 약간 지연 후 판정
+      inp.addEventListener('blur', () => setTimeout(() => collapseIfEmpty(inp), 150));
+    });
 
     if (TODO.view === 'kanban') wireKanbanDnD(wrap, refresh);
     // 타임라인: 오늘 위치가 보이도록 초기 가로 스크롤

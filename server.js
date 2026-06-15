@@ -671,6 +671,21 @@ app.get('/api/calendar', requireAuth, wrap(async (req, res) => {
     const asg = t.assignee ? (ids.length > 1 ? `${t.assignee} 외 ${ids.length - 1}` : t.assignee) : '';
     events.push({ type: 'task', id: t.id, project_id: t.project_id, date: t.target_date, title: t.title, category: t.category, state: t.status, assignee: asg, assignee_color: t.assignee_color, recurring: !!t.recurring_rule_id });
   }
+
+  // 세부 To-Do(생성일 기준) — todos=1일 때만, 본인 담당 업무의 것만 표시
+  if (req.query.todos === '1') {
+    const todos = await q(`SELECT td.id, td.task_id, td.content, td.done, td.created_at,
+                                  t.title AS task_title, t.assignee_id, t.assignee_ids
+                             FROM task_todos td JOIN tasks t ON t.id = td.task_id
+                            WHERE t.status <> '취소' AND t.archived_at IS NULL`);
+    for (const td of todos) {
+      if (!taskAssignees(td).includes(req.user.id)) continue;
+      const date = tsToDateStr(td.created_at);
+      if (from && date < from) continue;
+      if (to && date > to) continue;
+      events.push({ type: 'todo', id: td.id, task_id: td.task_id, date, title: td.content, done: !!td.done, task_title: td.task_title });
+    }
+  }
   res.json(events);
 }));
 

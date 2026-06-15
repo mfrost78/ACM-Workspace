@@ -362,6 +362,8 @@ table.xls-tbl .cell-select.tone-na   { background-color: var(--tone-na-bg);   co
 .dot.eval { background: #af52de; }
 .dot.task { background: #5856d6; }
 .cal-ev.task { background: rgba(88,86,214,.16); color: #4b49c4; box-shadow: inset 3px 0 0 0 #5856d6; }
+.cal-ev.todo { background: rgba(120,120,128,.14); color: var(--text-2); box-shadow: inset 3px 0 0 0 var(--text-3); font-weight: 500; }
+.cal-ev.todo.done-state .cal-ev-t { text-decoration: line-through; }
 .chk-inline { display: inline-flex; align-items: center; gap: 5px; font-size: 12.5px; color: var(--text-2); cursor: pointer; white-space: nowrap; }
 
 /* 토글 스위치 (내일정/전체일정 등) */
