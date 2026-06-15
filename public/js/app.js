@@ -1423,9 +1423,14 @@ async function viewTodo(view) {
       </div>`}
       <div class="toolbar">
         <div class="seg" id="vSeg">
-          ${[['list', '리스트'], ['kanban', '칸반'], ['rel', '관계도'], ['timeline', '타임라인']].map(([v, l]) =>
+          ${[['list', '리스트'], ['kanban', '칸반']].map(([v, l]) =>
             `<button data-v="${v}" class="${TODO.view === v ? 'on' : ''}">${l}</button>`).join('')}
         </div>
+        <select class="select" id="vAdv" style="width:auto" title="고급 보기(관계도·타임라인)">
+          <option value="">고급 보기…</option>
+          <option value="rel" ${TODO.view === 'rel' ? 'selected' : ''}>관계도</option>
+          <option value="timeline" ${TODO.view === 'timeline' ? 'selected' : ''}>타임라인</option>
+        </select>
         <div class="seg" id="stSeg">
           ${[['진행중', '진행중'], ['완료', '완료'], ['취소', '취소'], ['all', '전체'], ['archive', '📦 보관함']].map(([s, l]) =>
             `<button data-st="${s}" class="${TODO.status === s ? 'on' : ''}">${l}</button>`).join('')}
@@ -1449,6 +1454,7 @@ async function viewTodo(view) {
     wrap.innerHTML = toolbar(vTasks) + bodyHtml;
 
     wrap.querySelector('#vSeg').addEventListener('click', e => { const b = e.target.closest('[data-v]'); if (b) { TODO.view = b.dataset.v; draw(); } });
+    $('#vAdv', wrap)?.addEventListener('change', e => { TODO.view = e.target.value || 'list'; draw(); });
     wrap.querySelector('#stSeg').addEventListener('click', async e => {
       const b = e.target.closest('[data-st]'); if (!b) return;
       const wasArch = inArchive(); TODO.status = b.dataset.st;
@@ -1903,14 +1909,14 @@ async function openTaskModal(id, opts = {}) {
         <div class="field"><label>중요도</label><select class="select" name="priority">${TODO_PRIORITY.map(p => `<option ${d.priority === p ? 'selected' : ''}>${esc(p)}</option>`).join('')}</select></div>
         <div class="field"><label>상태</label><select class="select" name="status">${TODO_STATUS.map(s => `<option ${d.status === s ? 'selected' : ''}>${esc(s)}</option>`).join('')}</select></div>
         <div class="field full"><label>제목 *</label><input class="input" name="title" value="${esc(d.title || '')}" required></div>
-        <div class="field full"><label>내용</label><textarea class="input" name="content" rows="3">${esc(d.content || '')}</textarea></div>
+        <div class="field full"><label>내용 <span class="lbl-hint">설명·배경 (진행 기록은 아래 F/U, 참고자료는 파일 링크)</span></label><textarea class="input" name="content" rows="3" placeholder="업무의 설명·배경을 적습니다">${esc(d.content || '')}</textarea></div>
         <div class="field full"><label>담당자 (복수 선택 가능)</label>${assigneePicker(selAsg)}</div>
         <div class="field"><label>시작일</label><input class="input" name="start_date" type="date" value="${esc(d.start_date || '')}"></div>
         <div class="field"><label>목표일</label><input class="input" name="target_date" type="date" value="${esc(d.target_date || '')}"></div>
         <div class="field"><label>완료일</label><input class="input" name="done_date" type="date" value="${esc(d.done_date || '')}"></div>
       </form>
       <div class="link-section"><div class="section-title">파일 링크 <span class="t-muted" style="font-weight:400;font-size:12px">(클라우드 저장소 주소)</span></div><div id="taskLinks"></div></div>
-      ${editing ? `<div class="fu-section"><div class="section-title">진행상황 F/U</div><div id="fuList" class="fu-list"><div class="t-muted">불러오는 중…</div></div>
+      ${editing ? `<div class="fu-section"><div class="section-title">진행상황 F/U <span class="t-muted" style="font-weight:400;font-size:12px">(날짜별 진행 기록)</span></div><div id="fuList" class="fu-list"><div class="t-muted">불러오는 중…</div></div>
         <div class="fu-add"><input class="input" type="date" id="fuDate" style="width:auto"><input class="input" id="fuContent" placeholder="진행 내용 입력"><button class="btn btn-sm btn-primary" id="fuAdd">추가</button></div></div>` : ''}
     </div>
     <div class="modal-foot">
