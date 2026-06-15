@@ -68,7 +68,7 @@ export const OFFBOARDING_TASKS = [
   { key: 'sangsil',         label: '상실신고',        type: 'select', opts: 'wc',  cats: A },
   { key: 'toejikgeum',      label: '퇴직금 지급',     type: 'select', opts: 'wcn', cats: A },
   { key: 'irp',             label: '퇴직연금/IRP 문자', type: 'select', opts: 'irp', cats: A },
-  { key: 'toejik_jeongsan', label: '퇴직정산금',      type: 'select', opts: 'wcn', cats: A },
+  { key: 'toejik_jeongsan', label: '퇴직정산금',      type: 'select', opts: 'wc',  cats: A },
   { key: 'apis',            label: 'APIS 해지',       type: 'select', opts: 'wcn', cats: A },
   { key: 'messenger',       label: '메신저',          type: 'select', opts: 'wcn', cats: HB },
   { key: 'naver_cloud',     label: '네이버 클라우드', type: 'select', opts: 'wcn', cats: ONLY_HQ },

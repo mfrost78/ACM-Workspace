@@ -448,7 +448,7 @@ app.delete('/api/employees/:id', requireAuth, wrap(async (req, res) => {
 }));
 
 /* ---------------- Onboarding ---------------- */
-const ONB_FIELDS = ['emp_no', 'name', 'category', 'position', 'org', 'field', 'join_date', 'tasks', 'state', 'rehire'];
+const ONB_FIELDS = ['emp_no', 'name', 'category', 'position', 'org', 'field', 'join_date', 'tasks', 'state', 'rehire', 'memo'];
 const tasksVal = (b) => JSON.stringify(b.tasks || {});
 // 필드별 값 변환 — rehire는 정수 컬럼이라 0/1로 강제(미전송 시 0)
 const onbVal = (b, f) => f === 'tasks' ? tasksVal(b) : f === 'rehire' ? (b.rehire ? 1 : 0) : (b[f] ?? (f === 'state' ? '진행중' : ''));
@@ -522,7 +522,13 @@ app.post('/api/onboarding/bulk-delete', requireAuth, wrap(async (req, res) => {
 }));
 
 /* ---------------- Offboarding ---------------- */
-const OFB_FIELDS = ['emp_no', 'name', 'category', 'position', 'org', 'field', 'join_date', 'leave_date', 'resign_date', 'resign_reason', 'tasks', 'state', 'employee_id'];
+const OFB_FIELDS = ['emp_no', 'name', 'category', 'position', 'org', 'field', 'join_date', 'leave_date', 'resign_date', 'resign_reason', 'tasks', 'state', 'employee_id', 'rehire_planned', 'memo'];
+// 필드별 값 변환 — rehire_planned는 int 컬럼(0/1 강제), employee_id는 null 허용
+const ofbVal = (b, f) => f === 'tasks' ? tasksVal(b)
+  : f === 'rehire_planned' ? (b.rehire_planned ? 1 : 0)
+  : f === 'state' ? (b.state ?? '진행중')
+  : f === 'employee_id' ? (b.employee_id ?? null)
+  : (b[f] ?? '');
 
 app.get('/api/offboarding', requireAuth, wrap(async (req, res) => {
   bg(syncCompletionStates('offboarding', OFFBOARDING_TASKS, true));
@@ -541,7 +547,7 @@ app.post('/api/offboarding', requireAuth, wrap(async (req, res) => {
   const b = req.body || {};
   if (!b.name || !b.category || !b.leave_date) return res.status(400).json({ error: '성명·구분·퇴사예정일은 필수입니다.' });
   if ('employee_id' in b) b.employee_id = b.employee_id ? Number(b.employee_id) : null;
-  const vals = OFB_FIELDS.map(f => f === 'tasks' ? tasksVal(b) : (b[f] ?? (f === 'state' ? '진행중' : (f === 'employee_id' ? null : ''))));
+  const vals = OFB_FIELDS.map(f => ofbVal(b, f));
   const ph = OFB_FIELDS.map(() => '?').join(',');
   const row = await one(`INSERT INTO offboarding (${OFB_FIELDS.join(',')}, created_by) VALUES (${ph}, ?) RETURNING *`, [...vals, req.user.id]);
   logAct({ userId: req.user.id, userName: req.user.name, action: '퇴사자 등록', targetType: 'offboarding', targetId: row.id, detail: b.name });
@@ -566,7 +572,7 @@ app.put('/api/offboarding/:id', requireAuth, wrap(async (req, res) => {
   if (!sets.length) return res.status(400).json({ error: '변경 항목 없음' });
   const row = await one(
     `UPDATE offboarding SET ${sets.map(f => `${f}=?`).join(',')}, updated_at=now() WHERE id=? RETURNING *`,
-    [...sets.map(f => f === 'tasks' ? tasksVal(b) : b[f]), id]);
+    [...sets.map(f => ofbVal(b, f)), id]);
   res.json(row);
 }));
 

@@ -122,7 +122,6 @@ function renderLogin() {
       <div class="field"><label>아이디</label><input class="input" name="username" autocomplete="username" autofocus required></div>
       <div class="field"><label>비밀번호</label><input class="input" name="password" type="password" autocomplete="current-password" required></div>
       <button class="btn btn-primary btn-block mt8" type="submit">로그인</button>
-      <p class="hint">기본 계정 · admin / admin1234</p>
     </form>
   </div>`;
   $('#loginForm').addEventListener('submit', async e => {
@@ -607,7 +606,9 @@ function basicInfoFields(kind, d = {}, empList = []) {
       <div id="empInfo" class="contents">${empInfoBlock(d)}</div>
       <div class="field"><label>퇴사예정일 *</label><input class="input" name="leave_date" type="date" value="${esc(d.leave_date || '')}" required></div>
       <div class="field"><label>사직원 접수일</label><input class="input" name="resign_date" type="date" value="${esc(d.resign_date || '')}"></div>
+      <div class="field"><label>재입사 예정</label><label class="chk-inline" style="height:38px"><input type="checkbox" name="rehire_planned" ${d.rehire_planned ? 'checked' : ''}> 재입사 예정</label></div>
       <div class="field full"><label>퇴직사유</label><input class="input" name="resign_reason" value="${esc(d.resign_reason || '')}" placeholder="자유 기재"></div>
+      <div class="field full"><label>메모</label><textarea class="input" name="memo" rows="2" placeholder="개인별 메모">${esc(d.memo || '')}</textarea></div>
     </div>`;
   }
 
@@ -621,6 +622,7 @@ function basicInfoFields(kind, d = {}, empList = []) {
       <div class="field"><label>소속</label><input class="input" name="org" value="${esc(d.org || '')}"></div>
       <div class="field"><label>입사일 *</label><input class="input" name="join_date" type="date" value="${esc(d.join_date || '')}" required></div>
       <div class="field"><label>재입사 여부</label><label class="chk-inline" style="height:38px"><input type="checkbox" name="rehire" ${d.rehire ? 'checked' : ''}> 재입사자</label></div>
+      <div class="field full"><label>메모</label><textarea class="input" name="memo" rows="2" placeholder="개인별 메모">${esc(d.memo || '')}</textarea></div>
     </div>`;
 }
 
@@ -647,7 +649,7 @@ function renderChecklist(kind, category, tasks, joinDate, leaveDate) {
     if (t.type === 'amount') {
       const done = val !== undefined && val !== null && val !== '';
       return `<div class="check-item"><div class="ci-label">${esc(t.label)} <span class="pill ${done ? 'done' : 'todo'}" style="margin-left:auto">${done ? '완료' : '미완료'}</span></div>
-        <input class="input" type="number" min="0" placeholder="금액 입력" data-task="${t.key}" value="${esc(val)}"></div>`;
+        <input class="input" type="text" placeholder="금액 또는 내용" data-task="${t.key}" value="${esc(val)}"></div>`;
     }
     const opts = OPTS[t.opts];
     const cur = val || opts[0];
@@ -781,8 +783,9 @@ async function openEntryModal(kind, data) {
     delete body.employee_pick;
     body.tasks = tasks;
     if ('employee_id' in body) body.employee_id = body.employee_id ? Number(body.employee_id) : null;
-    // 재입사 체크박스: 미체크 시 FormData에 누락되므로 항상 0/1로 명시(입사자 한정)
+    // 체크박스: 미체크 시 FormData에 누락되므로 항상 0/1로 명시
     if (isOn) { const rh = form.querySelector('[name="rehire"]'); body.rehire = rh && rh.checked ? 1 : 0; }
+    else { const rp = form.querySelector('[name="rehire_planned"]'); body.rehire_planned = rp && rp.checked ? 1 : 0; }
     return body;
   }
 
@@ -825,6 +828,44 @@ async function openEntryModal(kind, data) {
 async function openOnboarding(id) { const d = await api('GET', `/onboarding/${id}`); openEntryModal('on', d); }
 async function openOffboarding(id) { const d = await api('GET', `/offboarding/${id}`); openEntryModal('off', d); }
 
+/* ============ 엑셀(CSV) 내려받기 ============ */
+// UTF-8 BOM + CRLF로 한국어 Excel에서 바로 열림. aoa = [[헤더...],[행...]]
+function downloadCSV(filename, aoa) {
+  const cell = (v) => { const s = v == null ? '' : String(v); return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
+  const csv = '﻿' + aoa.map(row => row.map(cell).join(',')).join('\r\n');
+  const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8;' }));
+  const a = document.createElement('a');
+  a.href = url; a.download = filename; document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+// 입사자/퇴사자 목록 → CSV 행렬(보이는 항목 + 체크리스트 값 전체)
+function listToAoa(kind, rows, defs) {
+  const isOn = kind === 'on';
+  const head = ['사번', '성명', '구분', '직급', '분야', '소속', isOn ? '입사일' : '퇴사예정일'];
+  if (!isOn) head.push('사직원접수', '재입사예정');
+  if (isOn) head.push('재입사');
+  head.push('상태', '진행률(%)', '메모', ...defs.map(t => t.label));
+  const aoa = [head];
+  for (const r of rows) {
+    const tasks = parseTasks(r.tasks);
+    const eff = isOn ? tasks : effectiveTasks(defs, 'off', r.category, tasks, r.join_date, r.leave_date);
+    const pr = progress(defs, r.category, eff);
+    const active = activeTasks(defs, r.category);
+    const row = [r.emp_no || '', r.name || '', r.category || '', r.position || '', r.field || '', r.org || '', (isOn ? r.join_date : r.leave_date) || ''];
+    if (!isOn) row.push(r.resign_date || '', r.rehire_planned ? '예' : '');
+    if (isOn) row.push(r.rehire ? '예' : '');
+    row.push(r.state || '', pr, r.memo || '');
+    for (const t of defs) {
+      if (!active.includes(t)) { row.push(''); continue; }
+      if (t.type === 'autodate') { row.push(computeDate(t.calc, r.join_date) || ''); continue; }
+      if (!isOn && t.key === 'toejikgeum' && under1Year(r.join_date, r.leave_date)) { row.push('대상아님'); continue; }
+      row.push(tasks[t.key] ?? '');
+    }
+    aoa.push(row);
+  }
+  return aoa;
+}
+
 /* ============ 입사자 관리 ============ */
 async function viewOnboarding(view) { await listView(view, 'on'); }
 async function viewOffboarding(view) { await listView(view, 'off'); }
@@ -839,11 +880,12 @@ async function listView(view, kind) {
   wireTopbar(view);
   $('#addBtn', view).addEventListener('click', () => openEntryModal(kind));
 
-  const filter = { state: '진행중', q: '', category: '', tasks: [] };
+  const filter = { state: '진행중', q: '', category: '', month: '', tasks: [] };
   const selected = new Set();
   let allRows = [];   // 서버에서 받은 전체(상태 무관)
   const wrap = document.createElement('div');
   view.appendChild(wrap);
+  const dateLabel = isOn ? '입사월' : '퇴사월';
 
   // 정적 셸(툴바·검색 입력)은 1회만 렌더 — 키 입력마다 input 재생성을 막아 한글 IME 끊김·포커스 상실 방지
   wrap.innerHTML = `
@@ -852,9 +894,12 @@ async function listView(view, kind) {
         ${['진행중', '완료', 'all'].map(s => `<button data-st="${s}" class="${filter.state === s ? 'on' : ''}">${s === 'all' ? '전체' : s}</button>`).join('')}
       </div>
       <select class="select" id="fCat" style="width:auto"><option value="">구분 전체</option>${CATEGORIES.map(c => `<option>${esc(c)}</option>`).join('')}</select>
+      <input class="input" type="month" id="fMonth" style="width:auto" title="${dateLabel} 조회">
+      <button class="btn btn-sm" id="fMonthClear" title="월 필터 해제" hidden>×</button>
       <div class="search"><input class="input" id="q" placeholder="이름·사번 검색" value=""></div>
       <button class="btn btn-sm btn-danger" id="bulkDel" disabled>선택 삭제</button>
       <div class="spacer"></div><span class="t-muted" id="rowCount"></span>
+      <button class="btn btn-sm" id="btnExcel" title="엑셀(CSV) 내려받기">⬇ 엑셀</button>
     </div>
     <div class="toolbar">
       <select class="select" id="fTaskKey" style="width:auto">
@@ -880,6 +925,7 @@ async function listView(view, kind) {
     let filtered = allRows.filter(r =>
       (filter.state === 'all' || r.state === filter.state) &&
       (!filter.category || r.category === filter.category) &&
+      (!filter.month || ((isOn ? r.join_date : r.leave_date) || '').slice(0, 7) === filter.month) &&
       (!filter.q || (r.name || '').includes(filter.q) || (r.emp_no || '').includes(filter.q)));
     for (const f of filter.tasks) {
       const def = defs.find(t => t.key === f.key);
@@ -912,7 +958,7 @@ async function listView(view, kind) {
     bulkDel.disabled = !selected.size;
     bulkDel.textContent = `선택 삭제${selected.size ? ` (${selected.size})` : ''}`;
 
-    const colCount = 1 + (2 + (isOn ? 0 : 1)) + 1 + defs.length + 2;
+    const colCount = 1 + (2 + (isOn ? 0 : 1)) + 1 + defs.length + 3;   // +메모
     resultEl.innerHTML = `
       <div class="card"><div class="card-body"><div class="table-wrap">
         <table class="tbl xls-tbl"><thead><tr>
@@ -921,6 +967,7 @@ async function listView(view, kind) {
           <th>진행률</th><th>상태</th>
           <th>구분</th><th>${isOn ? '입사일' : '퇴사예정일'}</th>
           ${isOn ? '' : '<th>사직원접수</th>'}
+          <th>메모</th>
           ${defs.map(t => `<th>${esc(t.label)}</th>`).join('')}
         </tr></thead><tbody>
         ${filtered.length ? filtered.map(r => {
@@ -930,19 +977,20 @@ async function listView(view, kind) {
           const active = activeTasks(defs, r.category);
           return `<tr data-id="${r.id}">
             <td class="sticky-col sel-col"><input type="checkbox" class="rowSel" data-id="${r.id}" ${selected.has(r.id) ? 'checked' : ''}></td>
-            <td class="t-strong sticky-col name-col"><span class="name-link" data-id="${r.id}">${esc(r.name)}</span> ${r.emp_no ? `<span class="t-muted">${esc(r.emp_no)}</span>` : ''}${isOn && r.rehire ? ' <span class="pill blue" style="font-size:10px">재입사</span>' : ''}</td>
+            <td class="t-strong sticky-col name-col"><span class="name-link" data-id="${r.id}">${esc(r.name)}</span> ${r.emp_no ? `<span class="t-muted">${esc(r.emp_no)}</span>` : ''}${isOn && r.rehire ? ' <span class="pill blue" style="font-size:10px">재입사</span>' : ''}${!isOn && r.rehire_planned ? ' <span class="pill blue" style="font-size:10px">재입사예정</span>' : ''}</td>
             <td>${progBar(pr)}</td>
             <td><span class="pill ${r.state === '완료' ? 'done' : 'blue'}">${esc(r.state)}</span></td>
             <td><span class="pill gray">${esc(r.category)}</span></td>
             <td>${esc(isOn ? r.join_date : r.leave_date) || '—'}</td>
             ${isOn ? '' : `<td>${esc(r.resign_date) || '—'}</td>`}
+            <td><input type="text" class="cell-input memo-input" placeholder="메모" data-id="${r.id}" data-memo="1" value="${esc(r.memo || '')}"></td>
             ${defs.map(t => {
               if (!active.includes(t)) return `<td class="cell-na">—</td>`;
               if (t.type === 'autodate') return `<td class="cell-na">${esc(computeDate(t.calc, r.join_date)) || '—'}</td>`;
               const forcedNA = !isOn && t.key === 'toejikgeum' && under1Year(r.join_date, r.leave_date);
               if (forcedNA) return `<td class="cell-na">대상아님</td>`;
               if (t.type === 'date') return `<td><input type="date" class="cell-input" data-id="${r.id}" data-task="${t.key}" value="${esc(tasks[t.key] || '')}"></td>`;
-              if (t.type === 'amount') return `<td><input type="number" min="0" class="cell-input" placeholder="금액" data-id="${r.id}" data-task="${t.key}" value="${esc(tasks[t.key] ?? '')}"></td>`;
+              if (t.type === 'amount') return `<td><input type="text" class="cell-input" placeholder="금액/내용" data-id="${r.id}" data-task="${t.key}" value="${esc(tasks[t.key] ?? '')}"></td>`;
               const cur = tasks[t.key] || OPTS[t.opts][0];
               const tone = STATE_TONE[cur] || 'na';
               const optList = OPTS[t.opts].includes(cur) ? OPTS[t.opts] : [cur, ...OPTS[t.opts]];
@@ -993,6 +1041,14 @@ async function listView(view, kind) {
     renderTable();
   });
   fCat.addEventListener('change', e => { filter.category = e.target.value; renderTable(); });
+  const fMonth = $('#fMonth', wrap), fMonthClear = $('#fMonthClear', wrap);
+  fMonth.addEventListener('change', () => { filter.month = fMonth.value; fMonthClear.hidden = !fMonth.value; renderTable(); });
+  fMonthClear.addEventListener('click', () => { fMonth.value = ''; filter.month = ''; fMonthClear.hidden = true; renderTable(); });
+  $('#btnExcel', wrap).addEventListener('click', () => {
+    const rows = applyFilter();
+    const stamp = filter.month || todayStr();
+    downloadCSV(`${title}_${stamp}.csv`, listToAoa(kind, rows, defs));
+  });
   let deb;
   q.addEventListener('input', () => { filter.q = q.value; clearTimeout(deb); deb = setTimeout(renderTable, 200); });
   fTaskKey.addEventListener('change', () => {
@@ -1007,13 +1063,21 @@ async function listView(view, kind) {
     renderChips(); renderTable();
   });
 
-  // 인라인 체크리스트 변경은 결과 영역에 위임(테이블 재렌더와 무관하게 유지)
+  // 인라인 변경(체크리스트 / 메모)은 결과 영역에 위임(테이블 재렌더와 무관하게 유지)
   resultEl.addEventListener('change', async e => {
-    const el = e.target.closest('[data-task]');
-    if (!el) return;
-    const id = Number(el.dataset.id);
-    await api('PUT', `/${isOn ? 'onboarding' : 'offboarding'}/${id}`, { tasks: { [el.dataset.task]: el.value } });
-    await reload();
+    const base = `/${isOn ? 'onboarding' : 'offboarding'}`;
+    const taskEl = e.target.closest('[data-task]');
+    if (taskEl) {
+      await api('PUT', `${base}/${Number(taskEl.dataset.id)}`, { tasks: { [taskEl.dataset.task]: taskEl.value } });
+      await reload();
+      return;
+    }
+    const memoEl = e.target.closest('[data-memo]');
+    if (memoEl) {
+      const id = Number(memoEl.dataset.id);
+      await api('PUT', `${base}/${id}`, { memo: memoEl.value });
+      const row = allRows.find(r => r.id === id); if (row) row.memo = memoEl.value;   // 재렌더 없이 캐시만 갱신(포커스 유지)
+    }
   });
 
   bulkDel.addEventListener('click', async () => {
@@ -1832,14 +1896,17 @@ async function viewEmployees(view) {
       <select class="select" id="fField" style="width:auto"><option value="">분야 전체</option>${meta.fields.map(f => `<option>${esc(f)}</option>`).join('')}</select>
       <select class="select" id="fOrg" style="width:auto;max-width:200px"><option value="">소속 전체</option>${meta.orgs.map(f => `<option>${esc(f)}</option>`).join('')}</select>
       <div class="spacer"></div><span class="t-muted" id="empCount"></span>
+      <button class="btn btn-sm" id="btnExcel" title="엑셀(CSV) 내려받기">⬇ 엑셀</button>
     </div>
     <div id="empResult"></div>`;
 
   const resultEl = $('#empResult', wrap);
   const countEl = $('#empCount', wrap);
   const seg = wrap.querySelector('.seg');
+  let lastRows = [];
 
   function renderRows(rows) {
+    lastRows = rows;
     countEl.textContent = `${rows.length}명`;
     resultEl.innerHTML = `
       <div class="card"><div class="card-body"><div class="table-wrap">
@@ -1877,6 +1944,11 @@ async function viewEmployees(view) {
   q.addEventListener('input', () => { filter.q = q.value; clearTimeout(deb); deb = setTimeout(refresh, 200); });
   $('#fField', wrap).addEventListener('change', e => { filter.field = e.target.value; refresh(); });
   $('#fOrg', wrap).addEventListener('change', e => { filter.org = e.target.value; refresh(); });
+  $('#btnExcel', wrap).addEventListener('click', () => {
+    const head = ['사번', '성명', '직위', '분야', '부서/현장', '소속', '입사일', '상태'];
+    const aoa = [head, ...lastRows.map(r => [r.emp_no || '', r.name || '', r.position || '', r.field || '', r.dept || '', r.org || '', r.join_date || '', r.status || ''])];
+    downloadCSV(`재직자현황_${todayStr()}.csv`, aoa);
+  });
 
   renderRows(await api('GET', '/employees?' + buildQs().toString()));
 }
