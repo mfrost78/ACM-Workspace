@@ -331,7 +331,7 @@ function weekStrip(byDate, days, tk) {
       <div class="wk-evs">${evs.map(ev => {
         const isHr = ev.type === 'onboarding' || ev.type === 'offboarding' || ev.type === 'eval';
         const pre = ev.type === 'onboarding' ? '입사 ' : ev.type === 'offboarding' ? '퇴사 ' : ev.type === 'eval' ? '평가 ' : '';
-        return `<div class="wk-ev ${isHr ? 'hr' : 'tk'}" data-type="${ev.type}" data-id="${ev.id}" title="${esc(pre + ev.title)}">${esc(pre + ev.title)}</div>`;
+        return `<div class="wk-ev ${isHr ? 'hr' : 'tk'} ${ev.state === '완료' ? 'done-state' : ''}" data-type="${ev.type}" data-id="${ev.id}" title="${esc(pre + ev.title)}">${esc(pre + ev.title)}</div>`;
       }).join('') || '<div class="wk-none">·</div>'}</div>
     </div>`;
   }).join('')}</div>`;
@@ -552,6 +552,7 @@ function basicInfoFields(kind, d = {}, empList = []) {
       <div class="field"><label>분야</label><select class="select" name="field">${fieldOpts}</select></div>
       <div class="field"><label>소속</label><input class="input" name="org" value="${esc(d.org || '')}"></div>
       <div class="field"><label>입사일 *</label><input class="input" name="join_date" type="date" value="${esc(d.join_date || '')}" required></div>
+      <div class="field"><label>재입사 여부</label><label class="chk-inline" style="height:38px"><input type="checkbox" name="rehire" ${d.rehire ? 'checked' : ''}> 재입사자</label></div>
     </div>`;
 }
 
@@ -582,9 +583,11 @@ function renderChecklist(kind, category, tasks, joinDate, leaveDate) {
     }
     const opts = OPTS[t.opts];
     const cur = val || opts[0];
+    // 현재값이 옵션 목록에 없으면(과거 데이터) 앞에 끼워 넣어 값 유실 방지
+    const optList = opts.includes(cur) ? opts : [cur, ...opts];
     const forcedNA = kind === 'off' && t.key === 'toejikgeum' && under1Year(joinDate, leaveDate);
     return `<div class="check-item"><div class="ci-label">${esc(t.label)} ${pillFor(cur)}</div>
-      <select class="select" data-task="${t.key}" ${forcedNA ? 'disabled' : ''}>${opts.map(o => `<option ${o === cur ? 'selected' : ''}>${o}</option>`).join('')}</select>
+      <select class="select" data-task="${t.key}" ${forcedNA ? 'disabled' : ''}>${optList.map(o => `<option ${o === cur ? 'selected' : ''}>${o}</option>`).join('')}</select>
       ${forcedNA ? `<div class="ci-hint" style="margin-top:4px">입사 1년 미만 — 자동 대상아님</div>` : ''}</div>`;
   }).join('')}</div>`;
 }
@@ -710,6 +713,8 @@ async function openEntryModal(kind, data) {
     delete body.employee_pick;
     body.tasks = tasks;
     if ('employee_id' in body) body.employee_id = body.employee_id ? Number(body.employee_id) : null;
+    // 재입사 체크박스: 미체크 시 FormData에 누락되므로 항상 0/1로 명시(입사자 한정)
+    if (isOn) { const rh = form.querySelector('[name="rehire"]'); body.rehire = rh && rh.checked ? 1 : 0; }
     return body;
   }
 
@@ -768,12 +773,43 @@ async function listView(view, kind) {
 
   const filter = { state: '진행중', q: '', category: '', tasks: [] };
   const selected = new Set();
+  let allRows = [];   // 서버에서 받은 전체(상태 무관)
   const wrap = document.createElement('div');
   view.appendChild(wrap);
 
-  async function draw() {
-    const rows = await api('GET', `/${isOn ? 'onboarding' : 'offboarding'}`);
-    let filtered = rows.filter(r =>
+  // 정적 셸(툴바·검색 입력)은 1회만 렌더 — 키 입력마다 input 재생성을 막아 한글 IME 끊김·포커스 상실 방지
+  wrap.innerHTML = `
+    <div class="toolbar">
+      <div class="seg">
+        ${['진행중', '완료', 'all'].map(s => `<button data-st="${s}" class="${filter.state === s ? 'on' : ''}">${s === 'all' ? '전체' : s}</button>`).join('')}
+      </div>
+      <select class="select" id="fCat" style="width:auto"><option value="">구분 전체</option>${CATEGORIES.map(c => `<option>${esc(c)}</option>`).join('')}</select>
+      <div class="search"><input class="input" id="q" placeholder="이름·사번 검색" value=""></div>
+      <button class="btn btn-sm btn-danger" id="bulkDel" disabled>선택 삭제</button>
+      <div class="spacer"></div><span class="t-muted" id="rowCount"></span>
+    </div>
+    <div class="toolbar">
+      <select class="select" id="fTaskKey" style="width:auto">
+        <option value="">+ 항목별 필터</option>
+        ${filterableTasks.map(t => `<option value="${t.key}">${esc(t.label)}</option>`).join('')}
+      </select>
+      <select class="select" id="fTaskVal" style="width:auto" disabled><option value="">값 선택</option></select>
+      <button class="btn btn-sm" id="addFilter" disabled>필터 추가</button>
+      <div class="chips" id="chipArea"></div>
+    </div>
+    <div id="listResult"></div>`;
+
+  const seg = wrap.querySelector('.seg');
+  const fCat = $('#fCat', wrap);
+  const q = $('#q', wrap);
+  const bulkDel = $('#bulkDel', wrap);
+  const countEl = $('#rowCount', wrap);
+  const chipArea = $('#chipArea', wrap);
+  const resultEl = $('#listResult', wrap);
+  const fTaskKey = $('#fTaskKey', wrap), fTaskVal = $('#fTaskVal', wrap), addFilter = $('#addFilter', wrap);
+
+  function applyFilter() {
+    let filtered = allRows.filter(r =>
       (filter.state === 'all' || r.state === filter.state) &&
       (!filter.category || r.category === filter.category) &&
       (!filter.q || (r.name || '').includes(filter.q) || (r.emp_no || '').includes(filter.q)));
@@ -785,38 +821,31 @@ async function listView(view, kind) {
         return cur === f.value;
       });
     }
-
     // 더 이상 화면에 없는 항목의 선택 상태는 정리
     const visibleIds = new Set(filtered.map(r => r.id));
     for (const id of [...selected]) if (!visibleIds.has(id)) selected.delete(id);
+    return filtered;
+  }
 
-    const baseCols = 2 + (isOn ? 0 : 1); // 대상자 + 구분 + (입사/퇴사일) + (사직원접수)
-    const colCount = 1 + baseCols + 1 + defs.length + 2; // 체크박스 + 진행률/상태
+  function renderChips() {
+    chipArea.innerHTML = filter.tasks.map((f, i) => {
+      const def = defs.find(t => t.key === f.key);
+      return `<span class="chip">${esc(def?.label || f.key)}: ${esc(f.value)}<i data-rm="${i}">×</i></span>`;
+    }).join('');
+    chipArea.querySelectorAll('[data-rm]').forEach(b => b.addEventListener('click', () => {
+      filter.tasks.splice(Number(b.dataset.rm), 1); renderChips(); renderTable();
+    }));
+  }
 
-    wrap.innerHTML = `
-      <div class="toolbar">
-        <div class="seg">
-          ${['진행중', '완료', 'all'].map(s => `<button data-st="${s}" class="${filter.state === s ? 'on' : ''}">${s === 'all' ? '전체' : s}</button>`).join('')}
-        </div>
-        <select class="select" id="fCat" style="width:auto"><option value="">구분 전체</option>${CATEGORIES.map(c => `<option ${filter.category === c ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select>
-        <div class="search"><input class="input" id="q" placeholder="이름·사번 검색" value="${esc(filter.q)}"></div>
-        <button class="btn btn-sm btn-danger" id="bulkDel" ${selected.size ? '' : 'disabled'}>선택 삭제${selected.size ? ` (${selected.size})` : ''}</button>
-        <div class="spacer"></div><span class="t-muted">${filtered.length}건</span>
-      </div>
-      <div class="toolbar">
-        <select class="select" id="fTaskKey" style="width:auto">
-          <option value="">+ 항목별 필터</option>
-          ${filterableTasks.map(t => `<option value="${t.key}">${esc(t.label)}</option>`).join('')}
-        </select>
-        <select class="select" id="fTaskVal" style="width:auto" disabled><option value="">값 선택</option></select>
-        <button class="btn btn-sm" id="addFilter" disabled>필터 추가</button>
-        <div class="chips">
-          ${filter.tasks.map((f, i) => {
-            const def = defs.find(t => t.key === f.key);
-            return `<span class="chip">${esc(def?.label || f.key)}: ${esc(f.value)}<i data-rm="${i}">×</i></span>`;
-          }).join('')}
-        </div>
-      </div>
+  // 검색/필터 변경 시 테이블 영역만 갱신(검색 input은 그대로 유지)
+  function renderTable() {
+    const filtered = applyFilter();
+    countEl.textContent = `${filtered.length}건`;
+    bulkDel.disabled = !selected.size;
+    bulkDel.textContent = `선택 삭제${selected.size ? ` (${selected.size})` : ''}`;
+
+    const colCount = 1 + (2 + (isOn ? 0 : 1)) + 1 + defs.length + 2;
+    resultEl.innerHTML = `
       <div class="card"><div class="card-body"><div class="table-wrap">
         <table class="tbl xls-tbl"><thead><tr>
           <th class="sticky-col sel-col"><input type="checkbox" id="selAll" ${filtered.length && filtered.every(r => selected.has(r.id)) ? 'checked' : ''}></th>
@@ -833,7 +862,7 @@ async function listView(view, kind) {
           const active = activeTasks(defs, r.category);
           return `<tr data-id="${r.id}">
             <td class="sticky-col sel-col"><input type="checkbox" class="rowSel" data-id="${r.id}" ${selected.has(r.id) ? 'checked' : ''}></td>
-            <td class="t-strong sticky-col name-col"><span class="name-link" data-id="${r.id}">${esc(r.name)}</span> ${r.emp_no ? `<span class="t-muted">${esc(r.emp_no)}</span>` : ''}</td>
+            <td class="t-strong sticky-col name-col"><span class="name-link" data-id="${r.id}">${esc(r.name)}</span> ${r.emp_no ? `<span class="t-muted">${esc(r.emp_no)}</span>` : ''}${isOn && r.rehire ? ' <span class="pill blue" style="font-size:10px">재입사</span>' : ''}</td>
             <td>${progBar(pr)}</td>
             <td><span class="pill ${r.state === '완료' ? 'done' : 'blue'}">${esc(r.state)}</span></td>
             <td><span class="pill gray">${esc(r.category)}</span></td>
@@ -848,7 +877,8 @@ async function listView(view, kind) {
               if (t.type === 'amount') return `<td><input type="number" min="0" class="cell-input" placeholder="금액" data-id="${r.id}" data-task="${t.key}" value="${esc(tasks[t.key] ?? '')}"></td>`;
               const cur = tasks[t.key] || OPTS[t.opts][0];
               const tone = STATE_TONE[cur] || 'na';
-              return `<td><select class="cell-select tone-${tone}" data-id="${r.id}" data-task="${t.key}">${OPTS[t.opts].map(o => `<option ${o === cur ? 'selected' : ''}>${esc(o)}</option>`).join('')}</select></td>`;
+              const optList = OPTS[t.opts].includes(cur) ? OPTS[t.opts] : [cur, ...OPTS[t.opts]];
+              return `<td><select class="cell-select tone-${tone}" data-id="${r.id}" data-task="${t.key}">${optList.map(o => `<option ${o === cur ? 'selected' : ''}>${esc(o)}</option>`).join('')}</select></td>`;
             }).join('')}
           </tr>`;
         }).join('') : `<tr><td colspan="${colCount}"><div class="empty"><div class="big">🗂️</div>${isOn ? '입사' : '퇴사'} 항목이 없습니다.<br>우측 상단에서 등록하세요.</div></td></tr>`}
@@ -856,71 +886,78 @@ async function listView(view, kind) {
       </div></div></div>`;
 
     // sel-col의 실제 렌더링 너비에 맞춰 name-col의 sticky 위치를 동적으로 보정
-    const selColEl = wrap.querySelector('table.xls-tbl thead .sel-col');
+    const selColEl = resultEl.querySelector('table.xls-tbl thead .sel-col');
     if (selColEl) {
       const w = Math.ceil(selColEl.getBoundingClientRect().width);
-      wrap.querySelectorAll('table.xls-tbl .name-col').forEach(el => { el.style.left = `${w}px`; });
+      resultEl.querySelectorAll('table.xls-tbl .name-col').forEach(el => { el.style.left = `${w}px`; });
     }
 
-    wrap.querySelector('.seg').addEventListener('click', e => {
-      const b = e.target.closest('[data-st]'); if (!b) return; filter.state = b.dataset.st; draw();
-    });
-    $('#fCat', wrap).addEventListener('change', e => { filter.category = e.target.value; draw(); });
-    const q = $('#q', wrap); q.addEventListener('input', () => { filter.q = q.value; draw(); q.focus(); });
-
-    const fTaskKey = $('#fTaskKey', wrap), fTaskVal = $('#fTaskVal', wrap), addFilter = $('#addFilter', wrap);
-    fTaskKey.addEventListener('change', () => {
-      const def = filterableTasks.find(t => t.key === fTaskKey.value);
-      if (!def) { fTaskVal.innerHTML = '<option value="">값 선택</option>'; fTaskVal.disabled = true; addFilter.disabled = true; return; }
-      fTaskVal.innerHTML = OPTS[def.opts].map(o => `<option>${esc(o)}</option>`).join('');
-      fTaskVal.disabled = false; addFilter.disabled = false;
-    });
-    addFilter.addEventListener('click', () => {
-      if (!fTaskKey.value || !fTaskVal.value) return;
-      filter.tasks.push({ key: fTaskKey.value, value: fTaskVal.value });
-      draw();
-    });
-    wrap.querySelectorAll('.chip [data-rm]').forEach(b => b.addEventListener('click', () => {
-      filter.tasks.splice(Number(b.dataset.rm), 1); draw();
-    }));
-
     // 이름 클릭시에만 상세 팝업 오픈
-    wrap.querySelectorAll('.name-link').forEach(el => el.addEventListener('click', () => {
+    resultEl.querySelectorAll('.name-link').forEach(el => el.addEventListener('click', () => {
       (isOn ? openOnboarding : openOffboarding)(Number(el.dataset.id));
     }));
 
-    // 체크리스트 항목 인라인 변경
-    wrap.querySelector('tbody').addEventListener('change', async e => {
-      const el = e.target.closest('[data-task]');
-      if (!el) return;
-      const id = Number(el.dataset.id);
-      const key = el.dataset.task;
-      await api('PUT', `/${isOn ? 'onboarding' : 'offboarding'}/${id}`, { tasks: { [key]: el.value } });
-      draw();
-    });
-
     // 체크박스 선택
-    const selAll = $('#selAll', wrap);
-    selAll.addEventListener('change', () => {
+    const selAll = $('#selAll', resultEl);
+    if (selAll) selAll.addEventListener('change', () => {
       filtered.forEach(r => { if (selAll.checked) selected.add(r.id); else selected.delete(r.id); });
-      draw();
+      renderTable();
     });
-    wrap.querySelectorAll('.rowSel').forEach(cb => cb.addEventListener('change', () => {
+    resultEl.querySelectorAll('.rowSel').forEach(cb => cb.addEventListener('change', () => {
       const id = Number(cb.dataset.id);
       if (cb.checked) selected.add(id); else selected.delete(id);
-      draw();
+      bulkDel.disabled = !selected.size;
+      bulkDel.textContent = `선택 삭제${selected.size ? ` (${selected.size})` : ''}`;
     }));
-
-    // 일괄 삭제
-    $('#bulkDel', wrap).addEventListener('click', async () => {
-      if (!selected.size) return;
-      if (!confirm(`선택한 ${selected.size}건을 삭제하시겠습니까? 이 작업은 되돌릴 수 없습니다.`)) return;
-      await api('POST', `/${isOn ? 'onboarding' : 'offboarding'}/bulk-delete`, { ids: [...selected] });
-      selected.clear();
-      draw();
-    });
   }
-  draw();
+
+  // 서버에서 다시 받아와 갱신(등록/수정/인라인 변경/삭제 후)
+  async function reload() {
+    allRows = await api('GET', `/${isOn ? 'onboarding' : 'offboarding'}`);
+    renderTable();
+  }
+
+  // 셸 핸들러 바인딩(1회)
+  seg.addEventListener('click', e => {
+    const b = e.target.closest('[data-st]'); if (!b) return;
+    filter.state = b.dataset.st;
+    seg.querySelectorAll('button').forEach(x => x.classList.toggle('on', x.dataset.st === filter.state));
+    renderTable();
+  });
+  fCat.addEventListener('change', e => { filter.category = e.target.value; renderTable(); });
+  let deb;
+  q.addEventListener('input', () => { filter.q = q.value; clearTimeout(deb); deb = setTimeout(renderTable, 200); });
+  fTaskKey.addEventListener('change', () => {
+    const def = filterableTasks.find(t => t.key === fTaskKey.value);
+    if (!def) { fTaskVal.innerHTML = '<option value="">값 선택</option>'; fTaskVal.disabled = true; addFilter.disabled = true; return; }
+    fTaskVal.innerHTML = OPTS[def.opts].map(o => `<option>${esc(o)}</option>`).join('');
+    fTaskVal.disabled = false; addFilter.disabled = false;
+  });
+  addFilter.addEventListener('click', () => {
+    if (!fTaskKey.value || !fTaskVal.value) return;
+    filter.tasks.push({ key: fTaskKey.value, value: fTaskVal.value });
+    renderChips(); renderTable();
+  });
+
+  // 인라인 체크리스트 변경은 결과 영역에 위임(테이블 재렌더와 무관하게 유지)
+  resultEl.addEventListener('change', async e => {
+    const el = e.target.closest('[data-task]');
+    if (!el) return;
+    const id = Number(el.dataset.id);
+    await api('PUT', `/${isOn ? 'onboarding' : 'offboarding'}/${id}`, { tasks: { [el.dataset.task]: el.value } });
+    await reload();
+  });
+
+  bulkDel.addEventListener('click', async () => {
+    if (!selected.size) return;
+    if (!confirm(`선택한 ${selected.size}건을 삭제하시겠습니까? 이 작업은 되돌릴 수 없습니다.`)) return;
+    await api('POST', `/${isOn ? 'onboarding' : 'offboarding'}/bulk-delete`, { ids: [...selected] });
+    selected.clear();
+    await reload();
+  });
+
+  renderChips();
+  await reload();
 }
 
 /* ============ 캘린더 ============ */
@@ -960,6 +997,7 @@ async function viewCalendar(view) {
           <div class="legend">
             <span><span class="dot in"></span>입사예정</span><span><span class="dot out"></span>퇴사예정</span>
             <span><span class="dot eval"></span>평가예정</span><span><span class="dot task"></span>업무 목표일</span>
+            <span class="legend-sym">◆ 프로젝트</span><span class="legend-sym">● 개별 업무</span>
           </div>
         </div>
         <div class="cal-grid">
@@ -1716,21 +1754,26 @@ async function viewEmployees(view) {
     if (filter.org) qs.set('org', filter.org);
     return qs;
   }
-  const [meta, firstRows] = await Promise.all([
-    api('GET', '/employees/meta'),
-    api('GET', '/employees?' + buildQs().toString()),
-  ]);
+  const meta = await api('GET', '/employees/meta');
 
-  async function draw(rows) {
-    rows = rows ?? await api('GET', '/employees?' + buildQs().toString());
-    wrap.innerHTML = `
-      <div class="toolbar">
-        <div class="seg">${['재직', '휴직', '퇴직', 'all'].map(s => `<button data-st="${s}" class="${filter.status === s ? 'on' : ''}">${s === 'all' ? '전체' : s}</button>`).join('')}</div>
-        <div class="search"><input class="input" id="q" placeholder="이름·사번·부서" value="${esc(filter.q)}"></div>
-        <select class="select" id="fField" style="width:auto"><option value="">분야 전체</option>${meta.fields.map(f => `<option ${filter.field === f ? 'selected' : ''}>${esc(f)}</option>`).join('')}</select>
-        <select class="select" id="fOrg" style="width:auto;max-width:200px"><option value="">소속 전체</option>${meta.orgs.map(f => `<option ${filter.org === f ? 'selected' : ''}>${esc(f)}</option>`).join('')}</select>
-        <div class="spacer"></div><span class="t-muted">${rows.length}명</span>
-      </div>
+  // 툴바/검색 입력은 1회만 렌더 — 키 입력마다 input을 재생성하지 않아 한글 IME 끊김·포커스 상실 방지
+  wrap.innerHTML = `
+    <div class="toolbar">
+      <div class="seg">${['재직', '휴직', '퇴직', 'all'].map(s => `<button data-st="${s}" class="${filter.status === s ? 'on' : ''}">${s === 'all' ? '전체' : s}</button>`).join('')}</div>
+      <div class="search"><input class="input" id="q" placeholder="이름·사번·부서" value=""></div>
+      <select class="select" id="fField" style="width:auto"><option value="">분야 전체</option>${meta.fields.map(f => `<option>${esc(f)}</option>`).join('')}</select>
+      <select class="select" id="fOrg" style="width:auto;max-width:200px"><option value="">소속 전체</option>${meta.orgs.map(f => `<option>${esc(f)}</option>`).join('')}</select>
+      <div class="spacer"></div><span class="t-muted" id="empCount"></span>
+    </div>
+    <div id="empResult"></div>`;
+
+  const resultEl = $('#empResult', wrap);
+  const countEl = $('#empCount', wrap);
+  const seg = wrap.querySelector('.seg');
+
+  function renderRows(rows) {
+    countEl.textContent = `${rows.length}명`;
+    resultEl.innerHTML = `
       <div class="card"><div class="card-body"><div class="table-wrap">
         <table class="tbl"><thead><tr>
           <th>사번</th><th>성명</th><th>직위</th><th>분야</th><th>부서/현장</th><th>소속</th><th>입사일</th><th>상태</th>
@@ -1743,13 +1786,31 @@ async function viewEmployees(view) {
         </tr>`).join('') : `<tr><td colspan="8"><div class="empty"><div class="big">👥</div>해당 인원이 없습니다.</div></td></tr>`}
         </tbody></table>
       </div></div></div>`;
-    wrap.querySelector('.seg').addEventListener('click', e => { const b = e.target.closest('[data-st]'); if (b) { filter.status = b.dataset.st; draw(); } });
-    const q = $('#q', wrap); q.addEventListener('input', () => { filter.q = q.value; draw(); q.focus(); });
-    $('#fField', wrap).addEventListener('change', e => { filter.field = e.target.value; draw(); });
-    $('#fOrg', wrap).addEventListener('change', e => { filter.org = e.target.value; draw(); });
-    wrap.querySelector('tbody').addEventListener('click', e => { const tr = e.target.closest('[data-id]'); if (tr) openEmpModal(Number(tr.dataset.id)); });
+    resultEl.querySelector('tbody').addEventListener('click', e => { const tr = e.target.closest('[data-id]'); if (tr) openEmpModal(Number(tr.dataset.id)); });
   }
-  draw(firstRows);
+
+  // 최신 요청만 반영(이전 응답이 늦게 도착해 덮어쓰는 race 방지)
+  let seq = 0;
+  async function refresh() {
+    const my = ++seq;
+    const rows = await api('GET', '/employees?' + buildQs().toString());
+    if (my !== seq) return;
+    renderRows(rows);
+  }
+
+  seg.addEventListener('click', e => {
+    const b = e.target.closest('[data-st]'); if (!b) return;
+    filter.status = b.dataset.st;
+    seg.querySelectorAll('button').forEach(x => x.classList.toggle('on', x.dataset.st === filter.status));
+    refresh();
+  });
+  const q = $('#q', wrap);
+  let deb;
+  q.addEventListener('input', () => { filter.q = q.value; clearTimeout(deb); deb = setTimeout(refresh, 200); });
+  $('#fField', wrap).addEventListener('change', e => { filter.field = e.target.value; refresh(); });
+  $('#fOrg', wrap).addEventListener('change', e => { filter.org = e.target.value; refresh(); });
+
+  renderRows(await api('GET', '/employees?' + buildQs().toString()));
 }
 
 async function openEmpModal(id) {

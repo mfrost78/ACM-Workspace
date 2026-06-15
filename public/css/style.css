@@ -263,8 +263,9 @@ table.xls-tbl .cell-input, table.xls-tbl .cell-select {
 table.xls-tbl .cell-select { padding-right: 24px; background-position: right 7px center; }
 table.xls-tbl input[type="number"].cell-input { min-width: 90px; }
 table.xls-tbl input[type="date"].cell-input { min-width: 130px; }
-table.xls-tbl .cell-select.tone-done { background-color: var(--tone-done-bg); color: var(--tone-done-fg); border-color: transparent; }
-table.xls-tbl .cell-select.tone-todo { background-color: var(--tone-todo-bg); color: var(--tone-todo-fg); border-color: transparent; }
+/* 완료(초록)/미완료(앰버)/대상아님(회색) 색 구분 강화 — 굵게 + 좌측 컬러 바 */
+table.xls-tbl .cell-select.tone-done { background-color: var(--tone-done-bg); color: var(--tone-done-fg); border-color: transparent; font-weight: 600; box-shadow: inset 3px 0 0 0 #4aa11a; }
+table.xls-tbl .cell-select.tone-todo { background-color: var(--tone-todo-bg); color: var(--tone-todo-fg); border-color: transparent; font-weight: 600; box-shadow: inset 3px 0 0 0 var(--orange); }
 table.xls-tbl .cell-select.tone-na   { background-color: var(--tone-na-bg);   color: var(--tone-na-fg);   border-color: transparent; }
 .name-link { cursor: pointer; }
 .name-link:hover { text-decoration: underline; color: var(--accent); }
@@ -336,6 +337,7 @@ table.xls-tbl .cell-select.tone-na   { background-color: var(--tone-na-bg);   co
 /* legend */
 .legend { display: flex; gap: 16px; align-items: center; font-size: 12.5px; color: var(--text-2); flex-wrap: wrap; }
 .legend span { display: inline-flex; align-items: center; gap: 6px; }
+.legend-sym { font-weight: 600; color: var(--accent); }
 .dot.eval { background: #af52de; }
 .dot.task { background: #5856d6; }
 .cal-ev.task { background: rgba(88,86,214,.16); color: #4b49c4; box-shadow: inset 3px 0 0 0 #5856d6; }
@@ -622,6 +624,7 @@ table.xls-tbl .cell-select.tone-na   { background-color: var(--tone-na-bg);   co
 .wk-ev { font-size: 10.5px; font-weight: 600; padding: 2px 5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
 .wk-ev.tk { background: var(--brand-soft); color: var(--accent); box-shadow: inset 2px 0 0 0 var(--brand); }
 .wk-ev.hr { background: rgba(255,149,0,.16); color: #b15c00; box-shadow: inset 2px 0 0 0 var(--orange); }
+.wk-ev.done-state { opacity: .45; text-decoration: line-through; }
 .wk-none { color: var(--text-3); font-size: 12px; text-align: center; }
 
 /* 팀 현황 — 중요도 도넛 + 담당자 부하 */

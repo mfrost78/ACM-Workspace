@@ -403,8 +403,10 @@ app.delete('/api/employees/:id', requireAuth, wrap(async (req, res) => {
 }));
 
 /* ---------------- Onboarding ---------------- */
-const ONB_FIELDS = ['emp_no', 'name', 'category', 'position', 'org', 'field', 'join_date', 'tasks', 'state'];
+const ONB_FIELDS = ['emp_no', 'name', 'category', 'position', 'org', 'field', 'join_date', 'tasks', 'state', 'rehire'];
 const tasksVal = (b) => JSON.stringify(b.tasks || {});
+// 필드별 값 변환 — rehire는 정수 컬럼이라 0/1로 강제(미전송 시 0)
+const onbVal = (b, f) => f === 'tasks' ? tasksVal(b) : f === 'rehire' ? (b.rehire ? 1 : 0) : (b[f] ?? (f === 'state' ? '진행중' : ''));
 
 app.get('/api/onboarding', requireAuth, wrap(async (req, res) => {
   bg(autoCompleteDueOnboarding(req.user));
@@ -423,7 +425,7 @@ app.get('/api/onboarding/:id', requireAuth, wrap(async (req, res) => {
 app.post('/api/onboarding', requireAuth, wrap(async (req, res) => {
   const b = req.body || {};
   if (!b.name || !b.category || !b.join_date) return res.status(400).json({ error: '성명·구분·입사일은 필수입니다.' });
-  const vals = ONB_FIELDS.map(f => f === 'tasks' ? tasksVal(b) : (b[f] ?? (f === 'state' ? '진행중' : '')));
+  const vals = ONB_FIELDS.map(f => onbVal(b, f));
   const ph = ONB_FIELDS.map(() => '?').join(',');
   const row = await one(`INSERT INTO onboarding (${ONB_FIELDS.join(',')}, created_by) VALUES (${ph}, ?) RETURNING *`, [...vals, req.user.id]);
   logAct({ userId: req.user.id, userName: req.user.name, action: '입사자 등록', targetType: 'onboarding', targetId: row.id, detail: b.name });
@@ -443,7 +445,7 @@ app.put('/api/onboarding/:id', requireAuth, wrap(async (req, res) => {
   if (!sets.length) return res.status(400).json({ error: '변경 항목 없음' });
   const row = await one(
     `UPDATE onboarding SET ${sets.map(f => `${f}=?`).join(',')}, updated_at=now() WHERE id=? RETURNING *`,
-    [...sets.map(f => f === 'tasks' ? tasksVal(b) : b[f]), id]);
+    [...sets.map(f => onbVal(b, f)), id]);
   res.json(row);
 }));
 

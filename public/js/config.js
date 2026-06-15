@@ -12,11 +12,13 @@ export const OPTS = {
   apply: ['미신청', '신청', '대상아님'],
   target: ['대상', '미대상'],
   send: ['미발송', '발송'],
+  irp: ['미완료', '완료(급여계좌)', '완료(IRP)', '대상아님'],   // 퇴직연금/IRP 문자: 지급계좌 구분
 };
 
 // 상태값 → 색상 톤 (완료/지급/제출/발송/대상 = 긍정 / 대상아님 = 중립)
 export const STATE_TONE = {
   '완료': 'done', '지급': 'done', '제출': 'done', '신청': 'done', '발송': 'done', '대상': 'done',
+  '완료(급여계좌)': 'done', '완료(IRP)': 'done',
   '미완료': 'todo', '미지급': 'todo', '미제출': 'todo', '미신청': 'todo', '미발송': 'todo', '미대상': 'na',
   '대상아님': 'na',
 };
@@ -65,7 +67,7 @@ export const OFFBOARDING_TASKS = [
   { key: 'hyuil_sudang',    label: '현장 휴일수당',   type: 'amount', cats: ONLY_SITE },
   { key: 'sangsil',         label: '상실신고',        type: 'select', opts: 'wc',  cats: A },
   { key: 'toejikgeum',      label: '퇴직금 지급',     type: 'select', opts: 'wcn', cats: A },
-  { key: 'irp',             label: '퇴직연금/IRP 문자', type: 'select', opts: 'wcn', cats: A },
+  { key: 'irp',             label: '퇴직연금/IRP 문자', type: 'select', opts: 'irp', cats: A },
   { key: 'toejik_jeongsan', label: '퇴직정산금',      type: 'select', opts: 'wcn', cats: A },
   { key: 'apis',            label: 'APIS 해지',       type: 'select', opts: 'wcn', cats: A },
   { key: 'messenger',       label: '메신저',          type: 'select', opts: 'wcn', cats: HB },
