@@ -552,7 +552,7 @@ table.xls-tbl .cell-select.tone-na   { background-color: var(--tone-na-bg);   co
 /* 좌측 연결선(트리) — 프로젝트와 하위 업무 관계 표시 */
 .tl-tasks { position: relative; }
 .tl-tasks::before { content: ''; position: absolute; left: 22px; top: 0; bottom: 17px; width: 2px; background: var(--border-strong); }
-.tl-task-label { padding-left: 38px; position: relative; }
+.tl-task-label { padding-left: 38px; }
 .tl-task-label::before { content: ''; position: absolute; left: 22px; top: 50%; width: 14px; height: 2px; background: var(--border-strong); }
 
 .tl-track { flex: 1; position: relative; min-width: 0; background-image: linear-gradient(90deg, var(--border) 0 1px, transparent 1px); background-repeat: repeat-x; }
