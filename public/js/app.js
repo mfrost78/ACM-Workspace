@@ -256,16 +256,23 @@ async function render() {
   refreshBadges();
 }
 
-// 사이드바 배지(진행중 건수)를 백그라운드에서 갱신 — 화면 전환을 막지 않음.
-// /dashboard 는 무거운 집계라서 60초 내 재호출은 캐시값으로 다시 그리기만 한다.
-let dashAt = 0;
+// /dashboard 는 무거운 집계라 60초 TTL + 진행 중 요청 공유(dedup)로 중복 호출을 막는다.
+// (예: 화면 전환 시 viewDashboard와 refreshBadges가 동시에 호출해도 요청은 1번만 나감)
+let dashAt = 0, dashInflight = null;
 const DASH_TTL = 60_000;
+function getDash(force = false) {
+  if (!force && dashAt && Date.now() - dashAt < DASH_TTL) return Promise.resolve(dash);
+  if (dashInflight) return dashInflight;
+  dashInflight = api('GET', '/dashboard')
+    .then(d => { dash = d; dashAt = Date.now(); dashInflight = null; return d; })
+    .catch(e => { dashInflight = null; throw e; });
+  return dashInflight;
+}
+
+// 사이드바 배지(진행중 건수)를 백그라운드에서 갱신 — 화면 전환을 막지 않음.
 async function refreshBadges() {
   try {
-    if (Date.now() - dashAt > DASH_TTL) {
-      dash = await api('GET', '/dashboard');
-      dashAt = Date.now();
-    }
+    await getDash();
     // 개별 항목(단일 버튼 + 그룹 메뉴 항목) 배지
     document.querySelectorAll('#nav [data-route]').forEach(btn => {
       const def = findNavItem(btn.dataset.route);
@@ -338,12 +345,11 @@ async function viewDashboard(view) {
   const wkDays = [...Array(7)].map((_, i) => { const d = new Date(wkStart); d.setDate(wkStart.getDate() + i); return d; });
   const tk = todayStr();
 
-  let dashData, onb, ofb, calEvents;
+  // 입·퇴사 예정은 /dashboard 응답(upcoming)에 통합되어 별도 요청이 필요 없음 → 요청 2건(=콜드스타트 인스턴스) 절감
+  let dashData, calEvents;
   try {
-    [dashData, onb, ofb, calEvents] = await Promise.all([
-      api('GET', '/dashboard'),
-      api('GET', '/onboarding?state=진행중'),
-      api('GET', '/offboarding?state=진행중'),
+    [dashData, calEvents] = await Promise.all([
+      getDash(true),
       api('GET', `/calendar?from=${ymd(wkDays[0])}&to=${ymd(wkDays[6])}`),
     ]);
   } catch (e) {
@@ -352,11 +358,8 @@ async function viewDashboard(view) {
     const r = $('#dashRetry', view); if (r) r.addEventListener('click', () => viewDashboard(view));
     return;
   }
-  dash = dashData; dashAt = Date.now();   // 직후 refreshBadges가 재호출하지 않도록 캐시 갱신
   const byDate = {}; for (const ev of calEvents) (byDate[ev.date] ||= []).push(ev);
-  const upcoming = [...onb.map(o => ({ ...o, kind: 'in', date: o.join_date })),
-                    ...ofb.map(o => ({ ...o, kind: 'out', date: o.leave_date }))]
-    .filter(x => x.date).sort((a, b) => a.date.localeCompare(b.date)).slice(0, 8);
+  const upcoming = dashData.upcoming || [];
 
   const taskMini = (t) => `
     <div class="dash-task" data-opentask="${t.id}">
@@ -1073,8 +1076,9 @@ async function viewTodo(view) {
   let projects = [], tasks = [];
   async function load() {
     const arch = inArchive() ? '?archived=1' : '';
+    // 사용자 목록은 자주 바뀌지 않으므로 캐시 사용(매 새로고침마다 강제 재조회하지 않음)
     [projects, tasks, todoUsers] = await Promise.all([
-      api('GET', `/projects${arch}`), api('GET', `/tasks${arch}`), getUsers(true),
+      api('GET', `/projects${arch}`), api('GET', `/tasks${arch}`), getUsers(),
     ]);
     if (!inArchive()) todoProjects = projects;
   }
@@ -1813,7 +1817,7 @@ async function viewUsers(view) {
       const row = rows.find(r => String(r.id) === b.dataset.del);
       if (!row) return;
       if (!confirm(`'${row.name}(${row.username})' 사용자를 삭제할까요?`)) return;
-      try { await api('DELETE', `/users/${row.id}`); toast('삭제되었습니다'); draw(); }
+      try { await api('DELETE', `/users/${row.id}`); _usersCache = null; toast('삭제되었습니다'); draw(); }
       catch (e) { toast(e.message, true); }
     }));
   }
@@ -1861,6 +1865,7 @@ function openUserModal(d, onSaved) {
     if (!editing && (!body.password || body.password.length < 8)) return toast('비밀번호는 8자 이상이어야 합니다', true);
     try {
       if (editing) await api('PUT', `/users/${d.id}`, body); else await api('POST', '/users', body);
+      _usersCache = null;   // 업무 보드 담당자 목록 캐시 무효화
       toast('저장되었습니다'); closeModal();
       if (onSaved) onSaved(); else render();
     } catch (e) { toast(e.message, true); }

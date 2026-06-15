@@ -84,6 +84,10 @@ function requireAdmin(req, res, next) {
 // 응답을 막지 않는 백그라운드 동기화 작업 (실패해도 요청에는 영향 없음)
 const bg = (promise) => { promise.catch(e => console.error('백그라운드 동기화 오류:', e)); };
 
+// 활동 로그는 비핵심 기록 — 응답을 막지 않도록 백그라운드로 기록(쓰기당 DB 왕복 1회 절약).
+// (드물게 서버리스 인스턴스 정지 시 일부 누락 가능하나 기능상 영향 없음)
+const logAct = (o) => { bg(logActivity(o)); };
+
 // KST 기준 오늘 날짜 ('YYYY-MM-DD')
 function kstTodayStr() {
   return new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 10);
@@ -120,7 +124,7 @@ async function autoCompleteDueOnboarding(actor) {
   const due = await q(`SELECT * FROM onboarding WHERE employee_id IS NULL AND join_date <> '' AND join_date <= ?`, [today]);
   for (const o of due) {
     await syncEmployeeFromOnboarding(o);
-    await logActivity({ userId: actor?.id, userName: actor?.name, action: '입사일 도래 → 재직자 현황 반영', targetType: 'onboarding', targetId: o.id, detail: o.name });
+    logAct({ userId: actor?.id, userName: actor?.name, action: '입사일 도래 → 재직자 현황 반영', targetType: 'onboarding', targetId: o.id, detail: o.name });
   }
 }
 
@@ -253,7 +257,7 @@ app.post('/api/auth/login', wrap(async (req, res) => {
   await clearFail(key);
   const token = await createSession(user.id);
   setSessionCookie(res, token);
-  await logActivity({ userId: user.id, userName: user.name, action: '로그인' });
+  logAct({ userId: user.id, userName: user.name, action: '로그인' });
   res.json({ user: { id: user.id, username: user.username, name: user.name, role: user.role, color: user.color, must_change_pw: !!user.must_change_pw } });
 }));
 
@@ -277,7 +281,7 @@ app.post('/api/auth/password', requireAuth, wrap(async (req, res) => {
   if (next === current) return res.status(400).json({ error: '현재 비밀번호와 다른 비밀번호를 사용하세요.' });
   await run('UPDATE users SET password_hash = ?, must_change_pw = 0 WHERE id = ?', [hashPassword(next), req.user.id]);
   invalidateSessionCacheForUser(req.user.id);   // 캐시된 must_change_pw 갱신
-  await logActivity({ userId: req.user.id, userName: req.user.name, action: '비밀번호 변경' });
+  logAct({ userId: req.user.id, userName: req.user.name, action: '비밀번호 변경' });
   res.json({ ok: true });
 }));
 
@@ -297,7 +301,7 @@ app.post('/api/users', requireAuth, requireAdmin, wrap(async (req, res) => {
     `INSERT INTO users (username, name, password_hash, role, color, must_change_pw) VALUES (?, ?, ?, ?, ?, 1) RETURNING id, username, name, role, color`,
     [username, name, hashPassword(password), role || 'member', color || '#0071e3']
   );
-  await logActivity({ userId: req.user.id, userName: req.user.name, action: '사용자 추가', targetType: 'user', targetId: row.id, detail: `${name} (${username})` });
+  logAct({ userId: req.user.id, userName: req.user.name, action: '사용자 추가', targetType: 'user', targetId: row.id, detail: `${name} (${username})` });
   res.json(row);
 }));
 
@@ -319,7 +323,7 @@ app.put('/api/users/:id', requireAuth, requireAdmin, wrap(async (req, res) => {
      password ? 1 : user.must_change_pw, id]
   );
   invalidateSessionCacheForUser(id);
-  await logActivity({ userId: req.user.id, userName: req.user.name, action: '사용자 정보 수정', targetType: 'user', targetId: id, detail: name ?? user.name });
+  logAct({ userId: req.user.id, userName: req.user.name, action: '사용자 정보 수정', targetType: 'user', targetId: id, detail: name ?? user.name });
   res.json({ ok: true });
 }));
 
@@ -334,7 +338,7 @@ app.delete('/api/users/:id', requireAuth, requireAdmin, wrap(async (req, res) =>
   }
   await run('DELETE FROM users WHERE id = ?', [id]);
   invalidateSessionCacheForUser(id);
-  await logActivity({ userId: req.user.id, userName: req.user.name, action: '사용자 삭제', targetType: 'user', targetId: id, detail: `${user.name} (${user.username})` });
+  logAct({ userId: req.user.id, userName: req.user.name, action: '사용자 삭제', targetType: 'user', targetId: id, detail: `${user.name} (${user.username})` });
   res.json({ ok: true });
 }));
 
@@ -374,7 +378,7 @@ app.post('/api/employees', requireAuth, wrap(async (req, res) => {
   const vals = EMP_FIELDS.map(f => b[f] ?? (f === 'status' ? '재직' : ''));
   const ph = EMP_FIELDS.map(() => '?').join(',');
   const row = await one(`INSERT INTO employees (${EMP_FIELDS.join(',')}) VALUES (${ph}) RETURNING *`, vals);
-  await logActivity({ userId: req.user.id, userName: req.user.name, action: '재직자 추가', targetType: 'employee', targetId: row.id, detail: b.name });
+  logAct({ userId: req.user.id, userName: req.user.name, action: '재직자 추가', targetType: 'employee', targetId: row.id, detail: b.name });
   res.json(row);
 }));
 
@@ -386,7 +390,7 @@ app.put('/api/employees/:id', requireAuth, wrap(async (req, res) => {
   const row = await one(
     `UPDATE employees SET ${sets.map(f => `${f}=?`).join(',')}, updated_at=now() WHERE id=? RETURNING *`,
     [...sets.map(f => b[f]), id]);
-  await logActivity({ userId: req.user.id, userName: req.user.name, action: '재직자 수정', targetType: 'employee', targetId: id, detail: b.name });
+  logAct({ userId: req.user.id, userName: req.user.name, action: '재직자 수정', targetType: 'employee', targetId: id, detail: b.name });
   res.json(row);
 }));
 
@@ -394,7 +398,7 @@ app.delete('/api/employees/:id', requireAuth, wrap(async (req, res) => {
   const id = Number(req.params.id);
   const row = await one('SELECT name FROM employees WHERE id = ?', [id]);
   await run('DELETE FROM employees WHERE id = ?', [id]);
-  await logActivity({ userId: req.user.id, userName: req.user.name, action: '재직자 삭제', targetType: 'employee', targetId: id, detail: row?.name });
+  logAct({ userId: req.user.id, userName: req.user.name, action: '재직자 삭제', targetType: 'employee', targetId: id, detail: row?.name });
   res.json({ ok: true });
 }));
 
@@ -422,7 +426,7 @@ app.post('/api/onboarding', requireAuth, wrap(async (req, res) => {
   const vals = ONB_FIELDS.map(f => f === 'tasks' ? tasksVal(b) : (b[f] ?? (f === 'state' ? '진행중' : '')));
   const ph = ONB_FIELDS.map(() => '?').join(',');
   const row = await one(`INSERT INTO onboarding (${ONB_FIELDS.join(',')}, created_by) VALUES (${ph}, ?) RETURNING *`, [...vals, req.user.id]);
-  await logActivity({ userId: req.user.id, userName: req.user.name, action: '입사자 등록', targetType: 'onboarding', targetId: row.id, detail: b.name });
+  logAct({ userId: req.user.id, userName: req.user.name, action: '입사자 등록', targetType: 'onboarding', targetId: row.id, detail: b.name });
   res.json(row);
 }));
 
@@ -448,7 +452,7 @@ app.post('/api/onboarding/:id/complete', requireAuth, wrap(async (req, res) => {
   const o = await one('SELECT * FROM onboarding WHERE id = ?', [id]);
   if (!o) return res.status(404).json({ error: '없음' });
   const empId = await applyOnboardingComplete(o);
-  await logActivity({ userId: req.user.id, userName: req.user.name, action: '입사 확정→재직자 반영', targetType: 'onboarding', targetId: id, detail: o.name });
+  logAct({ userId: req.user.id, userName: req.user.name, action: '입사 확정→재직자 반영', targetType: 'onboarding', targetId: id, detail: o.name });
   res.json({ ok: true, employee_id: empId });
 }));
 
@@ -456,7 +460,7 @@ app.delete('/api/onboarding/:id', requireAuth, wrap(async (req, res) => {
   const id = Number(req.params.id);
   const row = await one('SELECT name FROM onboarding WHERE id = ?', [id]);
   await run('DELETE FROM onboarding WHERE id = ?', [id]);
-  await logActivity({ userId: req.user.id, userName: req.user.name, action: '입사자 삭제', targetType: 'onboarding', targetId: id, detail: row?.name });
+  logAct({ userId: req.user.id, userName: req.user.name, action: '입사자 삭제', targetType: 'onboarding', targetId: id, detail: row?.name });
   res.json({ ok: true });
 }));
 
@@ -466,7 +470,7 @@ app.post('/api/onboarding/bulk-delete', requireAuth, wrap(async (req, res) => {
   const ph = ids.map(() => '?').join(',');
   const rows = await q(`SELECT id, name FROM onboarding WHERE id IN (${ph})`, ids);
   await run(`DELETE FROM onboarding WHERE id IN (${ph})`, ids);
-  for (const r of rows) await logActivity({ userId: req.user.id, userName: req.user.name, action: '입사자 일괄삭제', targetType: 'onboarding', targetId: r.id, detail: r.name });
+  for (const r of rows) logAct({ userId: req.user.id, userName: req.user.name, action: '입사자 일괄삭제', targetType: 'onboarding', targetId: r.id, detail: r.name });
   res.json({ ok: true, count: rows.length });
 }));
 
@@ -493,7 +497,7 @@ app.post('/api/offboarding', requireAuth, wrap(async (req, res) => {
   const vals = OFB_FIELDS.map(f => f === 'tasks' ? tasksVal(b) : (b[f] ?? (f === 'state' ? '진행중' : (f === 'employee_id' ? null : ''))));
   const ph = OFB_FIELDS.map(() => '?').join(',');
   const row = await one(`INSERT INTO offboarding (${OFB_FIELDS.join(',')}, created_by) VALUES (${ph}, ?) RETURNING *`, [...vals, req.user.id]);
-  await logActivity({ userId: req.user.id, userName: req.user.name, action: '퇴사자 등록', targetType: 'offboarding', targetId: row.id, detail: b.name });
+  logAct({ userId: req.user.id, userName: req.user.name, action: '퇴사자 등록', targetType: 'offboarding', targetId: row.id, detail: b.name });
   res.json(row);
 }));
 
@@ -529,7 +533,7 @@ app.post('/api/offboarding/:id/complete', requireAuth, wrap(async (req, res) => 
   if (!emp && o.name) emp = await one(`SELECT * FROM employees WHERE name = ? AND status <> '퇴직'`, [o.name]);
   if (emp) await run(`UPDATE employees SET status='퇴직', leave_date=?, updated_at=now() WHERE id=?`, [o.leave_date, emp.id]);
   await run(`UPDATE offboarding SET state='완료', employee_id=?, updated_at=now() WHERE id=?`, [emp?.id ?? o.employee_id ?? null, id]);
-  await logActivity({ userId: req.user.id, userName: req.user.name, action: '퇴사 확정→재직자 반영', targetType: 'offboarding', targetId: id, detail: o.name });
+  logAct({ userId: req.user.id, userName: req.user.name, action: '퇴사 확정→재직자 반영', targetType: 'offboarding', targetId: id, detail: o.name });
   res.json({ ok: true, matched: !!emp });
 }));
 
@@ -537,7 +541,7 @@ app.delete('/api/offboarding/:id', requireAuth, wrap(async (req, res) => {
   const id = Number(req.params.id);
   const row = await one('SELECT name FROM offboarding WHERE id = ?', [id]);
   await run('DELETE FROM offboarding WHERE id = ?', [id]);
-  await logActivity({ userId: req.user.id, userName: req.user.name, action: '퇴사자 삭제', targetType: 'offboarding', targetId: id, detail: row?.name });
+  logAct({ userId: req.user.id, userName: req.user.name, action: '퇴사자 삭제', targetType: 'offboarding', targetId: id, detail: row?.name });
   res.json({ ok: true });
 }));
 
@@ -547,7 +551,7 @@ app.post('/api/offboarding/bulk-delete', requireAuth, wrap(async (req, res) => {
   const ph = ids.map(() => '?').join(',');
   const rows = await q(`SELECT id, name FROM offboarding WHERE id IN (${ph})`, ids);
   await run(`DELETE FROM offboarding WHERE id IN (${ph})`, ids);
-  for (const r of rows) await logActivity({ userId: req.user.id, userName: req.user.name, action: '퇴사자 일괄삭제', targetType: 'offboarding', targetId: r.id, detail: r.name });
+  for (const r of rows) logAct({ userId: req.user.id, userName: req.user.name, action: '퇴사자 일괄삭제', targetType: 'offboarding', targetId: r.id, detail: r.name });
   res.json({ ok: true, count: rows.length });
 }));
 
@@ -622,7 +626,7 @@ app.get('/api/dashboard', requireAuth, wrap(async (req, res) => {
   const today = kstTodayStr(), weekEnd = addDays(today, 7);
   const cnt = async (sql, p = []) => (await one(sql, p)).c;
   // 모든 독립 쿼리를 한 번에 병렬 실행 — 원격 DB 왕복 횟수 최소화
-  const [empActive, empLeave, onbOpen, ofbOpen, open, users, fus, dones] = await Promise.all([
+  const [empActive, empLeave, onbOpen, ofbOpen, open, users, fus, dones, upIn, upOut] = await Promise.all([
     cnt(`SELECT COUNT(*)::int c FROM employees WHERE status='재직'`),
     cnt(`SELECT COUNT(*)::int c FROM employees WHERE status='휴직'`),
     cnt(`SELECT COUNT(*)::int c FROM onboarding WHERE state='진행중'`),
@@ -639,6 +643,9 @@ app.get('/api/dashboard', requireAuth, wrap(async (req, res) => {
     q(`SELECT t.id, t.title, t.updated_at, t.assignee_ids AS task_assignees, u.name AS assignee_name
          FROM tasks t LEFT JOIN users u ON u.id = t.assignee_id
         WHERE t.status = '완료' ORDER BY t.updated_at DESC LIMIT 8`),
+    // 다가오는 입·퇴사(진행중) — 대시보드가 별도 요청 없이 한 번에 받도록 통합
+    q(`SELECT id, name, join_date AS date, category, tasks FROM onboarding WHERE state='진행중' AND join_date <> '' ORDER BY join_date LIMIT 8`),
+    q(`SELECT id, name, leave_date AS date, category, tasks FROM offboarding WHERE state='진행중' AND leave_date <> '' ORDER BY leave_date LIMIT 8`),
   ]);
   const myId = req.user.id;
   const taskOpen = open.length;
@@ -673,7 +680,12 @@ app.get('/api/dashboard', requireAuth, wrap(async (req, res) => {
                          mine: toIdArray(d.task_assignees).includes(myId) })),
   ].sort((a, b) => new Date(b.at) - new Date(a.at)).slice(0, 8);
 
-  res.json({ empActive, empLeave, onbOpen, ofbOpen, taskOpen, myTaskOpen, taskOverdue, prioStats, taskStats, overdueTasks, dueSoonTasks, taskFeed });
+  const upcoming = [
+    ...upIn.map(o => ({ ...o, kind: 'in' })),
+    ...upOut.map(o => ({ ...o, kind: 'out' })),
+  ].filter(x => x.date).sort((a, b) => a.date.localeCompare(b.date)).slice(0, 8);
+
+  res.json({ empActive, empLeave, onbOpen, ofbOpen, taskOpen, myTaskOpen, taskOverdue, prioStats, taskStats, overdueTasks, dueSoonTasks, taskFeed, upcoming });
 }));
 
 app.get('/api/activity', requireAuth, wrap(async (req, res) => {
@@ -755,7 +767,7 @@ app.post('/api/projects', requireAuth, wrap(async (req, res) => {
     : (b[f] ?? (f === 'status' ? '진행중' : f === 'priority' ? '보통' : '')));
   const ph = PROJ_FIELDS.map(() => '?').join(',');
   const row = await one(`INSERT INTO projects (${PROJ_FIELDS.join(',')}, created_by) VALUES (${ph}, ?) RETURNING *`, [...vals, req.user.id]);
-  await logActivity({ userId: req.user.id, userName: req.user.name, action: '프로젝트 등록', targetType: 'project', targetId: row.id, detail: b.title });
+  logAct({ userId: req.user.id, userName: req.user.name, action: '프로젝트 등록', targetType: 'project', targetId: row.id, detail: b.title });
   res.json(row);
 }));
 
@@ -772,7 +784,7 @@ app.put('/api/projects/:id', requireAuth, wrap(async (req, res) => {
   if (next.status === '완료' && cur.status !== '완료' && !next.done_date) next.done_date = kstTodayStr();
   await run(`UPDATE projects SET ${PROJ_FIELDS.map(f => `${f}=?`).join(',')}, updated_at=now() WHERE id=?`,
     [...PROJ_FIELDS.map(f => next[f]), id]);
-  await logActivity({ userId: req.user.id, userName: req.user.name, action: '프로젝트 수정', targetType: 'project', targetId: id, detail: next.title });
+  logAct({ userId: req.user.id, userName: req.user.name, action: '프로젝트 수정', targetType: 'project', targetId: id, detail: next.title });
   res.json({ ok: true });
 }));
 
@@ -780,7 +792,7 @@ app.delete('/api/projects/:id', requireAuth, wrap(async (req, res) => {
   const id = Number(req.params.id);
   const row = await one('SELECT title FROM projects WHERE id = ?', [id]);
   await run('DELETE FROM projects WHERE id = ?', [id]);  // tasks/FU는 CASCADE
-  await logActivity({ userId: req.user.id, userName: req.user.name, action: '프로젝트 삭제', targetType: 'project', targetId: id, detail: row?.title });
+  logAct({ userId: req.user.id, userName: req.user.name, action: '프로젝트 삭제', targetType: 'project', targetId: id, detail: row?.title });
   res.json({ ok: true });
 }));
 
@@ -828,7 +840,7 @@ app.post('/api/tasks', requireAuth, wrap(async (req, res) => {
     : (b[f] ?? (f === 'status' ? '진행중' : f === 'priority' ? '보통' : '')));
   const ph = TASK_FIELDS.map(() => '?').join(',');
   const row = await one(`INSERT INTO tasks (${TASK_FIELDS.join(',')}, created_by) VALUES (${ph}, ?) RETURNING *`, [...vals, req.user.id]);
-  await logActivity({ userId: req.user.id, userName: req.user.name, action: '업무 등록', targetType: 'task', targetId: row.id, detail: b.title });
+  logAct({ userId: req.user.id, userName: req.user.name, action: '업무 등록', targetType: 'task', targetId: row.id, detail: b.title });
   res.json(row);
 }));
 
@@ -852,7 +864,7 @@ app.put('/api/tasks/:id', requireAuth, wrap(async (req, res) => {
   if (next.status === '완료' && cur.status !== '완료' && !next.done_date) next.done_date = kstTodayStr();
   await run(`UPDATE tasks SET ${TASK_FIELDS.map(f => `${f}=?`).join(',')}, updated_at=now() WHERE id=?`,
     [...TASK_FIELDS.map(f => next[f]), id]);
-  await logActivity({ userId: req.user.id, userName: req.user.name, action: '업무 수정', targetType: 'task', targetId: id, detail: next.title });
+  logAct({ userId: req.user.id, userName: req.user.name, action: '업무 수정', targetType: 'task', targetId: id, detail: next.title });
   res.json({ ok: true });
 }));
 
@@ -860,7 +872,7 @@ app.delete('/api/tasks/:id', requireAuth, wrap(async (req, res) => {
   const id = Number(req.params.id);
   const row = await one('SELECT title FROM tasks WHERE id = ?', [id]);
   await run('DELETE FROM tasks WHERE id = ?', [id]);
-  await logActivity({ userId: req.user.id, userName: req.user.name, action: '업무 삭제', targetType: 'task', targetId: id, detail: row?.title });
+  logAct({ userId: req.user.id, userName: req.user.name, action: '업무 삭제', targetType: 'task', targetId: id, detail: row?.title });
   res.json({ ok: true });
 }));
 
@@ -881,7 +893,7 @@ app.post('/api/tasks/:id/followups', requireAuth, wrap(async (req, res) => {
   const row = await one(
     `INSERT INTO task_followups (task_id, fu_date, content, created_by) VALUES (?, ?, ?, ?) RETURNING *`,
     [id, b.fu_date || '', b.content, req.user.id]);
-  await logActivity({ userId: req.user.id, userName: req.user.name, action: '진행상황 등록', targetType: 'task', targetId: id, detail: b.content.slice(0, 50) });
+  logAct({ userId: req.user.id, userName: req.user.name, action: '진행상황 등록', targetType: 'task', targetId: id, detail: b.content.slice(0, 50) });
   res.json(row);
 }));
 
@@ -900,7 +912,7 @@ for (const table of ['tasks', 'projects']) {
     const row = await one(`SELECT id, title FROM ${table} WHERE id = ?`, [id]);
     if (!row) return res.status(404).json({ error: '없음' });
     await run(`UPDATE ${table} SET archived_at = ?, updated_at = now() WHERE id = ?`, [on ? kstTodayStr() : null, id]);
-    await logActivity({ userId: req.user.id, userName: req.user.name, action: on ? '업무 보관' : '업무 복원', targetType, targetId: id, detail: row.title });
+    logAct({ userId: req.user.id, userName: req.user.name, action: on ? '업무 보관' : '업무 복원', targetType, targetId: id, detail: row.title });
     res.json({ ok: true });
   }));
 }
@@ -942,7 +954,7 @@ app.post('/api/recurring', requireAuth, wrap(async (req, res) => {
   const ph = RECUR_FIELDS.map(() => '?').join(',');
   const row = await one(`INSERT INTO recurring_rules (${RECUR_FIELDS.join(',')}, created_by) VALUES (${ph}, ?) RETURNING *`, [...vals, req.user.id]);
   resetRecurringThrottle();
-  await logActivity({ userId: req.user.id, userName: req.user.name, action: '반복 업무 등록', targetType: 'recurring', targetId: row.id, detail: b.title });
+  logAct({ userId: req.user.id, userName: req.user.name, action: '반복 업무 등록', targetType: 'recurring', targetId: row.id, detail: b.title });
   res.json(row);
 }));
 
@@ -956,7 +968,7 @@ app.put('/api/recurring/:id', requireAuth, wrap(async (req, res) => {
   await run(`UPDATE recurring_rules SET ${RECUR_FIELDS.map(f => `${f}=?`).join(',')} WHERE id=?`,
     [...RECUR_FIELDS.map(f => f === 'assignee_id' ? normAssignee(b.assignee_id) : b[f]), id]);
   resetRecurringThrottle();
-  await logActivity({ userId: req.user.id, userName: req.user.name, action: '반복 업무 수정', targetType: 'recurring', targetId: id, detail: b.title });
+  logAct({ userId: req.user.id, userName: req.user.name, action: '반복 업무 수정', targetType: 'recurring', targetId: id, detail: b.title });
   res.json({ ok: true });
 }));
 
@@ -964,7 +976,7 @@ app.delete('/api/recurring/:id', requireAuth, wrap(async (req, res) => {
   const id = Number(req.params.id);
   const row = await one('SELECT title FROM recurring_rules WHERE id = ?', [id]);
   await run('DELETE FROM recurring_rules WHERE id = ?', [id]);   // 생성된 업무 인스턴스는 유지
-  await logActivity({ userId: req.user.id, userName: req.user.name, action: '반복 업무 삭제', targetType: 'recurring', targetId: id, detail: row?.title });
+  logAct({ userId: req.user.id, userName: req.user.name, action: '반복 업무 삭제', targetType: 'recurring', targetId: id, detail: row?.title });
   res.json({ ok: true });
 }));
 
