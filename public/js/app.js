@@ -1354,7 +1354,7 @@ async function viewTodo(view) {
       openProjectModal(Number(el.dataset.proj), refresh);
     }));
     wrap.querySelectorAll('[data-task]').forEach(el => el.addEventListener('click', ev => {
-      if (ev.target.closest('.inline-st,[data-arch]')) return;
+      if (ev.target.closest('.inline-st,[data-arch],.todo-toggle')) return;
       ev.stopPropagation(); openTaskModal(Number(el.dataset.task), { onSaved: refresh });
     }));
     wrap.querySelectorAll('[data-addtask]').forEach(el => el.addEventListener('click', ev => { ev.stopPropagation(); openTaskModal(null, { project_id: el.dataset.addtask, onSaved: refresh }); }));
@@ -1378,6 +1378,44 @@ async function viewTodo(view) {
       } catch (e) { toast(e.message, true); }
     }));
 
+    // 세부 To-Do — 체크 토글/삭제는 증분 갱신(재렌더 없이 포커스·스크롤 유지)
+    function bindTodoLine(line) {
+      const check = line.querySelector('.todo-check');
+      check.addEventListener('click', ev => ev.stopPropagation());
+      check.addEventListener('change', async () => {
+        try { await api('PUT', `/todos/${check.dataset.todo}`, { done: check.checked ? 1 : 0 }); line.classList.toggle('done', check.checked); }
+        catch (e) { toast(e.message, true); check.checked = !check.checked; }
+      });
+      const del = line.querySelector('.todo-del');
+      del.addEventListener('click', async ev => {
+        ev.stopPropagation(); ev.preventDefault();
+        try { await api('DELETE', `/todos/${del.dataset.todel}`); line.remove(); } catch (e) { toast(e.message, true); }
+      });
+    }
+    wrap.querySelectorAll('.todo-line').forEach(bindTodoLine);
+    wrap.querySelectorAll('[data-todotoggle]').forEach(b => b.addEventListener('click', ev => {
+      ev.stopPropagation();
+      const id = Number(b.dataset.todotoggle);
+      const sub = wrap.querySelector(`.todo-sub[data-todofor="${id}"]`);
+      if (!sub) return;
+      if (sub.hidden) { sub.hidden = false; todoOpen.add(id); }
+      sub.querySelector('.todo-add-input')?.focus();
+    }));
+    wrap.querySelectorAll('.todo-add-input').forEach(inp => inp.addEventListener('keydown', async ev => {
+      if (ev.key !== 'Enter') return;
+      ev.preventDefault();
+      const content = inp.value.trim(); if (!content) return;
+      const tid = Number(inp.dataset.todoadd);
+      try {
+        const td = await api('POST', `/tasks/${tid}/todos`, { content });
+        const tmp = document.createElement('div'); tmp.innerHTML = todoLineHTML(td);
+        const line = tmp.firstElementChild;
+        inp.closest('.todo-add').insertAdjacentElement('beforebegin', line);
+        bindTodoLine(line);
+        inp.value = ''; inp.focus();
+      } catch (e) { toast(e.message, true); }
+    }));
+
     if (TODO.view === 'kanban') wireKanbanDnD(wrap, refresh);
     // 타임라인: 오늘 위치가 보이도록 초기 가로 스크롤
     if (TODO.view === 'timeline') {
@@ -1388,6 +1426,25 @@ async function viewTodo(view) {
 
   await load();
   draw();
+}
+
+// ---- 세부 To-Do (업무 하위 단순 체크 항목) ----
+const todoOpen = new Set();   // 항목이 없어도 입력창을 펼친 업무 id (스크롤 절약: 평소엔 숨김)
+function todoLineHTML(td) {
+  return `<label class="todo-line ${td.done ? 'done' : ''}" data-todoline="${td.id}">
+    <input type="checkbox" class="todo-check" data-todo="${td.id}" ${td.done ? 'checked' : ''}>
+    <span class="todo-text">${esc(td.content)}</span>
+    <span class="todo-date t-muted">${esc((td.created_at || '').slice(0, 10))}</span>
+    <button class="todo-del" data-todel="${td.id}" title="삭제">×</button>
+  </label>`;
+}
+function todoSub(t) {
+  const todos = Array.isArray(t.todos) ? t.todos : [];
+  const open = todos.length || todoOpen.has(Number(t.id));
+  return `<div class="todo-sub" data-todofor="${t.id}" ${open ? '' : 'hidden'}>
+    ${todos.map(todoLineHTML).join('')}
+    <div class="todo-add"><input class="todo-add-input" data-todoadd="${t.id}" placeholder="세부 To-Do 입력 후 Enter"></div>
+  </div>`;
 }
 
 // ---- 리스트 뷰 ----
@@ -1440,6 +1497,8 @@ function projBlock(p, vt, done, total, arch = false) {
 }
 // 리스트 1줄 — 모든 메타를 한 줄에 고정 높이로(말줄임). 좌→우: 제목 / 구분 / 중요도 / 상태 / D-day / F/U / 담당자 / 기간
 function taskRow(t, arch = false) {
+  const todos = Array.isArray(t.todos) ? t.todos : [];
+  const badge = todos.length ? `<span class="todo-badge">${todos.filter(x => x.done).length}/${todos.length}</span>` : '';
   return `
     <div class="task-row" data-task="${t.id}">
       <span class="task-name">${recurMark(t)}${esc(t.title)}</span>
@@ -1449,8 +1508,10 @@ function taskRow(t, arch = false) {
       <span class="t-muted asg multi">${assigneeTags(t)}</span>
       <span class="t-muted tr-date">${esc(t.target_date || '—')}</span>
       ${t.fu_count ? `<span class="fu-chip" title="진행상황 ${t.fu_count}건">💬 ${t.fu_count}</span>` : ''}
+      ${arch ? '' : `<button class="todo-toggle" data-todotoggle="${t.id}" title="세부 To-Do 추가">☑${badge}</button>`}
       ${archBtn('tasks', t, arch)}
-    </div>`;
+    </div>
+    ${arch ? '' : todoSub(t)}`;
 }
 
 // ---- 칸반 뷰 ----

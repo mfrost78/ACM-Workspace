@@ -862,7 +862,7 @@ app.get('/api/tasks', requireAuth, wrap(async (req, res) => {
   if (category) { where.push('t.category = ?'); params.push(category); }
   if (project_id) { where.push('t.project_id = ?'); params.push(Number(project_id)); }
   if (mine) { where.push('t.assignee_id = ?'); params.push(req.user.id); }
-  let [rows, fus] = await Promise.all([
+  let [rows, fus, todos] = await Promise.all([
     q(`SELECT t.*, u.name AS assignee_name, u.color AS assignee_color, p.title AS project_title
          FROM tasks t
          LEFT JOIN users u ON u.id = t.assignee_id
@@ -871,14 +871,17 @@ app.get('/api/tasks', requireAuth, wrap(async (req, res) => {
          ORDER BY t.id DESC`, params),
     // F/U 건수 + 최근 진행내용 병합용 (fu_date, id 순 정렬 → 마지막이 최신)
     q(`SELECT task_id, content, fu_date, id FROM task_followups ORDER BY task_id, fu_date, id`),
+    // 세부 To-Do (업무 하위 체크 항목)
+    q(`SELECT id, task_id, content, done, created_at FROM task_todos ORDER BY sort, id`),
   ]);
   // 아카이브 분리: 기본은 제외, ?archived=1 이면 아카이브만
   const showArchived = req.query.archived === '1';
   const today = kstTodayStr();
   rows = rows.filter(r => isArchivedRow(r, today) === showArchived);
-  const cmap = {}, lastMap = {};
+  const cmap = {}, lastMap = {}, tmap = {};
   for (const f of fus) { cmap[f.task_id] = (cmap[f.task_id] || 0) + 1; lastMap[f.task_id] = f.content; }
-  for (const r of rows) { r.fu_count = cmap[r.id] || 0; r.last_fu = lastMap[r.id] || ''; r.assignee_ids = taskAssignees(r); }
+  for (const td of todos) (tmap[td.task_id] ||= []).push(td);
+  for (const r of rows) { r.fu_count = cmap[r.id] || 0; r.last_fu = lastMap[r.id] || ''; r.assignee_ids = taskAssignees(r); r.todos = tmap[r.id] || []; }
   res.json(rows);
 }));
 
@@ -962,6 +965,42 @@ app.post('/api/tasks/:id/followups', requireAuth, wrap(async (req, res) => {
 app.delete('/api/followups/:id', requireAuth, wrap(async (req, res) => {
   const id = Number(req.params.id);
   await run('DELETE FROM task_followups WHERE id = ?', [id]);
+  res.json({ ok: true });
+}));
+
+/* --- 업무 세부 To-Do (단순 체크 항목) --- */
+app.get('/api/tasks/:id/todos', requireAuth, wrap(async (req, res) => {
+  res.json(await q(`SELECT id, task_id, content, done, created_at FROM task_todos WHERE task_id = ? ORDER BY sort, id`, [Number(req.params.id)]));
+}));
+
+app.post('/api/tasks/:id/todos', requireAuth, wrap(async (req, res) => {
+  const taskId = Number(req.params.id);
+  const content = (req.body?.content || '').trim();
+  if (!content) return res.status(400).json({ error: '내용은 필수입니다.' });
+  const task = await one('SELECT id FROM tasks WHERE id = ?', [taskId]);
+  if (!task) return res.status(404).json({ error: '업무 없음' });
+  const sortRow = await one(`SELECT COALESCE(MAX(sort), 0) + 1 AS s FROM task_todos WHERE task_id = ?`, [taskId]);
+  const row = await one(
+    `INSERT INTO task_todos (task_id, content, sort, created_by) VALUES (?, ?, ?, ?) RETURNING id, task_id, content, done, created_at`,
+    [taskId, content, sortRow.s, req.user.id]);
+  res.json(row);
+}));
+
+app.put('/api/todos/:id', requireAuth, wrap(async (req, res) => {
+  const id = Number(req.params.id);
+  const b = req.body || {};
+  const sets = [], params = [];
+  if ('content' in b) { sets.push('content = ?'); params.push(String(b.content).trim()); }
+  if ('done' in b) { sets.push('done = ?'); params.push(b.done ? 1 : 0); }
+  if (!sets.length) return res.status(400).json({ error: '변경 항목 없음' });
+  params.push(id);
+  const row = await one(`UPDATE task_todos SET ${sets.join(', ')} WHERE id = ? RETURNING id, task_id, content, done, created_at`, params);
+  if (!row) return res.status(404).json({ error: '없음' });
+  res.json(row);
+}));
+
+app.delete('/api/todos/:id', requireAuth, wrap(async (req, res) => {
+  await run('DELETE FROM task_todos WHERE id = ?', [Number(req.params.id)]);
   res.json({ ok: true });
 }));
 
