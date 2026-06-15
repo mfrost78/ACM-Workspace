@@ -5,27 +5,13 @@ import {
   TODO_STATUS, TODO_PRIORITY, PROJECT_CATEGORIES, TASK_SUBCATEGORIES, TASK_DESC,
   TODO_STATUS_TONE, PRIORITY_TONE, PRIORITY_ORDER, PRIORITY_COLOR, RECUR_FREQ, DOW_LABELS,
 } from './config.js';
+import { $, esc, todayStr, ymd, parseTasks, fmtTs, safeUrl, b64, ub64, downloadCSV } from './utils.js';
 
 // 체크리스트 항목 설명 툴팁(ⓘ) — 설명이 있는 항목에만 표시
 function descIcon(key) { const d = TASK_DESC[key]; return d ? ` <i class="info-dot" title="${esc(d)}">ⓘ</i>` : ''; }
 
 /* ============ 유틸 ============ */
-const $ = (s, r = document) => r.querySelector(s);
 const app = $('#app');
-const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-const todayStr = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
-
-// tasks 는 DB(jsonb)에서 객체로, 과거엔 문자열로 올 수 있어 양쪽 모두 처리
-const parseTasks = (t) => (t == null ? {} : (typeof t === 'string' ? (t ? JSON.parse(t) : {}) : t));
-// ISO timestamptz → 로컬 'MM-DD HH:MM' (withDate=true면 'YYYY-MM-DD HH:MM')
-function fmtTs(v, withDate) {
-  if (!v) return '';
-  const d = new Date(v);
-  if (isNaN(d)) return String(v).slice(0, 16);
-  const p = (n) => String(n).padStart(2, '0');
-  const md = `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
-  return withDate ? `${d.getFullYear()}-${md}` : md;
-}
 
 async function api(method, path, body) {
   const res = await fetch('/api' + path, {
@@ -441,9 +427,6 @@ function wireTopbar(root) { const b = $('#themeBtn', root); if (b) b.addEventLis
 /* ============ 대시보드 ============ */
 let dashFeedMine = false;   // 최근 업무 업데이트 "내 업무만" 토글
 let dashWkMine = false;      // 금주 일정 "내 일정만" 토글
-
-// 로컬 날짜 → 'YYYY-MM-DD'
-function ymd(d) { return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; }
 
 // 중요도 도넛 차트 SVG (가운데 총 건수, 세그먼트=중요도별 색)
 function donutSvg(dist, total) {
@@ -908,15 +891,7 @@ async function openOnboarding(id) { const d = await api('GET', `/onboarding/${id
 async function openOffboarding(id) { const d = await api('GET', `/offboarding/${id}`); openEntryModal('off', d); }
 
 /* ============ 엑셀(CSV) 내려받기 ============ */
-// UTF-8 BOM + CRLF로 한국어 Excel에서 바로 열림. aoa = [[헤더...],[행...]]
-function downloadCSV(filename, aoa) {
-  const cell = (v) => { const s = v == null ? '' : String(v); return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
-  const csv = '﻿' + aoa.map(row => row.map(cell).join(',')).join('\r\n');
-  const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8;' }));
-  const a = document.createElement('a');
-  a.href = url; a.download = filename; document.body.appendChild(a); a.click(); a.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
-}
+// downloadCSV 는 utils.js 로 분리됨. 아래는 입퇴사 목록 → CSV 행렬 변환.
 // 입사자/퇴사자 목록 → CSV 행렬(보이는 항목 + 체크리스트 값 전체)
 function listToAoa(kind, rows, defs) {
   const isOn = kind === 'on';
@@ -1300,8 +1275,7 @@ const catBadge = (c) => `<span class="pill cat cat-${{ '인사': 'a', '총무': 
 const schedText = (r) => { const a = r.start_date || '', b = r.target_date || ''; return a && b ? `${a} ~ ${b}` : (a || b || '—'); };
 const recurMark = (r) => (r.recurring_rule_id ? `<span class="recur-mark" title="정기 업무">🔁</span>` : '');
 
-// 파일 링크 — http(s)만 허용(javascript: 등 차단). 'Link' 버튼으로 새 탭 열기.
-const safeUrl = (u) => /^https?:\/\//i.test(String(u || '').trim()) ? String(u).trim() : '';
+// 파일 링크 — safeUrl(http(s)만 허용)은 utils.js. 'Link' 버튼으로 새 탭 열기.
 function linkButtons(links) {
   return (Array.isArray(links) ? links : []).map(l => {
     const u = safeUrl(l.url); if (!u) return '';
@@ -2343,9 +2317,7 @@ function bkFilename(d = new Date()) {
   return `backup_${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}_${p(d.getHours())}${p(d.getMinutes())}.json`;
 }
 
-// --- 백업 암호화(AES-GCM 256 / PBKDF2-SHA256) ---
-const b64 = (u8) => { let s = ''; for (const b of u8) s += String.fromCharCode(b); return btoa(s); };
-const ub64 = (s) => { const bin = atob(s); const u8 = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i); return u8; };
+// --- 백업 암호화(AES-GCM 256 / PBKDF2-SHA256) — b64/ub64는 utils.js ---
 async function bkDeriveKey(passphrase, salt) {
   const km = await crypto.subtle.importKey('raw', new TextEncoder().encode(passphrase), 'PBKDF2', false, ['deriveKey']);
   return crypto.subtle.deriveKey({ name: 'PBKDF2', salt, iterations: 150000, hash: 'SHA-256' },
