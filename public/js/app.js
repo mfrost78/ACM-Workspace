@@ -116,7 +116,7 @@ function renderLogin() {
   app.innerHTML = `
   <div class="login-wrap">
     <form class="login-card" id="loginForm">
-      <div class="login-logo">🗂️</div>
+      <div class="login-logo">🧭</div>
       <h1>Workspace</h1>
       <p class="sub">경영지원 업무 관리</p>
       <div class="field"><label>아이디</label><input class="input" name="username" autocomplete="username" autofocus required></div>
@@ -217,7 +217,7 @@ async function render() {
   app.innerHTML = `
   <div class="shell">
     <header class="topnav" id="topnav">
-      <button class="brand ${state.route === 'dashboard' ? 'active' : ''}" id="brandHome" title="대시보드"><span class="logo">🗂️</span><span class="name">Workspace</span></button>
+      <button class="brand ${state.route === 'dashboard' ? 'active' : ''}" id="brandHome" title="대시보드"><span class="logo">🧭</span><span class="name">Workspace</span></button>
       <nav class="nav" id="nav">${navHtml(u)}</nav>
       <div class="topnav-right">
         <div class="user-chip">
@@ -297,6 +297,7 @@ function wireTopbar(root) { const b = $('#themeBtn', root); if (b) b.addEventLis
 
 /* ============ 대시보드 ============ */
 let dashFeedMine = false;   // 최근 업무 업데이트 "내 업무만" 토글
+let dashWkMine = false;      // 금주 일정 "내 일정만" 토글
 
 // 로컬 날짜 → 'YYYY-MM-DD'
 function ymd(d) { return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; }
@@ -346,11 +347,12 @@ async function viewDashboard(view) {
   const tk = todayStr();
 
   // 입·퇴사 예정은 /dashboard 응답(upcoming)에 통합되어 별도 요청이 필요 없음 → 요청 2건(=콜드스타트 인스턴스) 절감
+  const loadCal = (mine) => api('GET', `/calendar?from=${ymd(wkDays[0])}&to=${ymd(wkDays[6])}${mine ? '&mine=1' : ''}`);
   let dashData, calEvents;
   try {
     [dashData, calEvents] = await Promise.all([
       getDash(true),
-      api('GET', `/calendar?from=${ymd(wkDays[0])}&to=${ymd(wkDays[6])}`),
+      loadCal(dashWkMine),
     ]);
   } catch (e) {
     const body = $('#dashBody', view);
@@ -358,7 +360,7 @@ async function viewDashboard(view) {
     const r = $('#dashRetry', view); if (r) r.addEventListener('click', () => viewDashboard(view));
     return;
   }
-  const byDate = {}; for (const ev of calEvents) (byDate[ev.date] ||= []).push(ev);
+  let byDate = {}; for (const ev of calEvents) (byDate[ev.date] ||= []).push(ev);
   const upcoming = dashData.upcoming || [];
 
   const taskMini = (t) => `
@@ -388,8 +390,9 @@ async function viewDashboard(view) {
       </div>
     </div>
     <div class="card wk-card">
-      <div class="card-head"><h3>📆 금주 일정</h3><span class="t-muted" style="font-size:12px">${ymd(wkDays[0])} ~ ${ymd(wkDays[6])}</span></div>
-      <div class="card-body">${weekStrip(byDate, wkDays, tk)}</div>
+      <div class="card-head"><h3>📆 금주 일정</h3><span class="t-muted" style="font-size:12px">${ymd(wkDays[0])} ~ ${ymd(wkDays[6])}</span><div class="spacer"></div>
+        <label class="tgl"><input type="checkbox" id="wkMine" ${dashWkMine ? 'checked' : ''}><span class="tgl-track"></span>${dashWkMine ? '내 일정' : '전체 일정'}</label></div>
+      <div class="card-body" id="wkStripBody">${weekStrip(byDate, wkDays, tk)}</div>
     </div>
     <div class="dash-cols dash-grid2">
       <div class="card">
@@ -454,6 +457,12 @@ async function viewDashboard(view) {
       </div>
     </div>`;
     $('#feedMine', view)?.addEventListener('change', e => { dashFeedMine = e.target.checked; draw(); });
+    $('#wkMine', view)?.addEventListener('change', async e => {
+      dashWkMine = e.target.checked;
+      calEvents = await loadCal(dashWkMine);
+      byDate = {}; for (const ev of calEvents) (byDate[ev.date] ||= []).push(ev);
+      draw();
+    });
   }
   draw();
 

@@ -341,6 +341,14 @@ table.xls-tbl .cell-select.tone-na   { background-color: var(--tone-na-bg);   co
 .cal-ev.task { background: rgba(88,86,214,.16); color: #4b49c4; box-shadow: inset 3px 0 0 0 #5856d6; }
 .chk-inline { display: inline-flex; align-items: center; gap: 5px; font-size: 12.5px; color: var(--text-2); cursor: pointer; white-space: nowrap; }
 
+/* 토글 스위치 (내일정/전체일정 등) */
+.tgl { display: inline-flex; align-items: center; gap: 7px; font-size: 12.5px; color: var(--text-2); cursor: pointer; white-space: nowrap; user-select: none; }
+.tgl input { position: absolute; opacity: 0; width: 0; height: 0; }
+.tgl-track { position: relative; width: 34px; height: 19px; border-radius: 10px; background: var(--surface-2); border: 1px solid var(--border-strong); transition: background .15s; flex-shrink: 0; }
+.tgl-track::after { content: ''; position: absolute; top: 1px; left: 1px; width: 15px; height: 15px; border-radius: 50%; background: #fff; transition: transform .15s; box-shadow: 0 1px 2px rgba(0,0,0,.2); }
+.tgl input:checked + .tgl-track { background: var(--accent); border-color: var(--accent); }
+.tgl input:checked + .tgl-track::after { transform: translateX(15px); }
+
 /* empty / misc */
 .empty { text-align: center; padding: 54px 20px; color: var(--text-3); }
 .empty .big { font-size: 38px; margin-bottom: 10px; }
@@ -434,7 +442,7 @@ table.xls-tbl .cell-select.tone-na   { background-color: var(--tone-na-bg);   co
 .team-name { width: 90px; font-weight: 600; flex-shrink: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .team-bar { flex: 1; height: 10px; background: var(--surface-2); border-radius: 6px; overflow: hidden; }
 .team-bar i { display: block; height: 100%; border-radius: 6px; transition: width .3s; }
-.team-cnt { font-size: 12px; color: var(--text-2); white-space: nowrap; }
+.team-cnt { width: 82px; flex: 0 0 82px; font-size: 12px; color: var(--text-2); white-space: nowrap; text-align: right; }
 .t-over { color: var(--red); }
 .dash-feed { padding: 6px 10px; }
 .feed-item { display: flex; align-items: flex-start; gap: 9px; padding: 9px 8px; border-bottom: 1px solid var(--border);
@@ -522,7 +530,8 @@ table.xls-tbl .cell-select.tone-na   { background-color: var(--tone-na-bg);   co
 .tl-scroll { overflow-x: auto; }
 .tl-inner { position: relative; }
 .tl-head-row { display: flex; position: sticky; top: 0; z-index: 4; background: var(--bg-elevated); border-bottom: 1px solid var(--border-strong); }
-.tl-corner { width: var(--label-w); flex: 0 0 var(--label-w); padding: 9px 14px; font-size: 11.5px; font-weight: 600; color: var(--text-3); }
+.tl-corner { width: var(--label-w); flex: 0 0 var(--label-w); padding: 9px 14px; font-size: 11.5px; font-weight: 600; color: var(--text-3);
+  position: sticky; left: 0; z-index: 5; background: var(--bg-elevated); }
 .tl-axis { flex: 1; position: relative; height: 34px; }
 .tl-month { position: absolute; top: 0; height: 100%; display: flex; align-items: center; padding-left: 7px;
   font-size: 11px; font-weight: 600; color: var(--text-2); border-left: 1px solid var(--border-strong); white-space: nowrap; }
@@ -535,8 +544,9 @@ table.xls-tbl .cell-select.tone-na   { background-color: var(--tone-na-bg);   co
 .tl-row + .tl-row { border-top: 1px solid var(--border); }
 .tl-proj-row { background: var(--brand-soft); }
 .tl-label { width: var(--label-w); flex: 0 0 var(--label-w); display: flex; align-items: center;
-  padding: 6px 14px; font-size: 12.5px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-.tl-proj-label { font-weight: 700; color: var(--accent); cursor: pointer; }
+  padding: 6px 14px; font-size: 12.5px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+  position: sticky; left: 0; z-index: 2; background: var(--bg-elevated); }
+.tl-proj-label { font-weight: 700; color: var(--accent); cursor: pointer; background: var(--brand-soft); }
 .tl-proj-label.orphan { color: var(--text-2); cursor: default; }
 .tl-task-label { color: var(--text); cursor: pointer; }
 /* 좌측 연결선(트리) — 프로젝트와 하위 업무 관계 표시 */
