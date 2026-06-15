@@ -80,6 +80,40 @@ export const OFFBOARDING_TASKS = [
   { key: 'bizring',         label: '비즈링',          type: 'select', opts: 'wcn', cats: ONLY_HQ },
 ];
 
+// 체크리스트 약어/항목 설명 — 처음 쓰는 사람을 위한 툴팁(ⓘ). 정확한 사내 의미는 관리자가 검수/수정 권장.
+export const TASK_DESC = {
+  // 입사
+  chae_yong: '채용 품의(결재) 진행',
+  ipsa_seoryu: '입사 구비서류 제출 확인',
+  server: '서버·복합기 접근 권한 설정',
+  myeongham: '명함 신청',
+  mungu: '문구류 지급',
+  apis: '사내 통합업무시스템(APIS) 계정 발급',
+  messenger: '사내 메신저 계정 발급',
+  naver_cloud: '네이버웍스/클라우드 계정 발급',
+  chwideuk: '4대보험 자격취득 신고',
+  kelep: '회계 프로그램(케이렙) 사용자 등록',
+  jikwon_myeongbu: '직원명부 등재',
+  gyeyakseo: '근로계약서 발송',
+  tmap: 'T map 비즈니스 주차 서비스 등록',
+  daerigo: '법인 대리운전 서비스(대리고) 등록',
+  yeongo: '연고관계 조사서 제출',
+  gwail: '입사 축하 과일바구니',
+  yes24: 'YES24 도서 구매 계정',
+  daesang: '수습 평가 대상 여부',
+  pyeongga_yejeong: '수습 평가 예정일(입사 +3개월 자동 계산)',
+  pyeongga_gyobu: '평가서 교부일(입사 +2개월 15일 자동 계산)',
+  pyeongga_hoesin: '평가서 회신일 입력(입력 시 일정에서 제외)',
+  yeonjang_gyeyak: '연장(정규 전환) 계약서 발송',
+  // 퇴사
+  sangsil: '4대보험 자격상실 신고',
+  irp: '퇴직연금/IRP 안내 문자 — 지급계좌(급여계좌/IRP) 구분',
+  toejik_jeongsan: '퇴직 시 정산금(퇴사자 전원 대상)',
+  yeyak: '사내 예약사이트 계정 해지',
+  caps: '캡스(보안) 출입/관제 등록·해지',
+  bizring: '대표번호 통화연결음(비즈링) 처리',
+};
+
 // 구분에 해당하는 활성 항목만 반환
 export function activeTasks(taskDefs, category) {
   return taskDefs.filter(t => t.cats.includes(category));

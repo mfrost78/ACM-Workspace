@@ -2,9 +2,12 @@ import {
   CATEGORIES, OPTS, STATE_TONE, ONBOARDING_TASKS, OFFBOARDING_TASKS,
   activeTasks, computeDate, progress, defaultTasks, POSITIONS, FIELDS,
   under1Year, effectiveTasks,
-  TODO_STATUS, TODO_PRIORITY, PROJECT_CATEGORIES, TASK_SUBCATEGORIES,
+  TODO_STATUS, TODO_PRIORITY, PROJECT_CATEGORIES, TASK_SUBCATEGORIES, TASK_DESC,
   TODO_STATUS_TONE, PRIORITY_TONE, PRIORITY_ORDER, PRIORITY_COLOR, RECUR_FREQ, DOW_LABELS,
 } from './config.js';
+
+// 체크리스트 항목 설명 툴팁(ⓘ) — 설명이 있는 항목에만 표시
+function descIcon(key) { const d = TASK_DESC[key]; return d ? ` <i class="info-dot" title="${esc(d)}">ⓘ</i>` : ''; }
 
 /* ============ 유틸 ============ */
 const $ = (s, r = document) => r.querySelector(s);
@@ -91,6 +94,57 @@ async function afterAuth() {
   try { applyConfig(await api('GET', '/config')); } catch { /* 설정 로드 실패 시 기본값 유지 */ }
   render();
   maybeAutoBackup();   // 관리자·폴더 지정 시 하루 1회 자동 로컬 백업(비차단)
+  maybeStartTour();    // 최초 1회 가이드 투어
+}
+
+/* ============ 최초 사용자 가이드 투어 ============ */
+const TOUR_KEY = 'hrws_tour_done';
+const TOUR_STEPS = [
+  { sel: '#brandHome', title: '환영합니다 👋', body: '좌상단 Workspace 로고를 누르면 언제든 대시보드로 돌아옵니다. 대시보드에서 진행중·지연·내 업무와 금주 일정을 한눈에 봅니다.' },
+  { sel: '[data-route="todo"]', title: '업무 보드', body: '프로젝트 → 업무 → 세부 To-Do 순서로 일을 관리합니다. 상단 ＋업무 또는 빠른 추가(⚡)로 등록하고, 마감이 가까우면 D-day 배지로 알려줍니다.' },
+  { sel: '#nav .nav-group', title: '입·퇴사 관리', body: '입사자·퇴사자 체크리스트로 처리 항목을 빠짐없이 관리합니다. 항목 옆 ⓘ에 마우스를 올리면 설명이 나옵니다.' },
+  { sel: '#btnNotif', title: '알림과 설정', body: '🔔 알림에서 업무 배정·마감 임박을 확인하고, ⚙️ 설정에서 비밀번호·항목·데이터 백업을 관리합니다.' },
+];
+function maybeStartTour() {
+  try {
+    if (localStorage.getItem(TOUR_KEY)) return;
+    if (!state.user || state.user.must_change_pw) return;
+    startTour();
+  } catch { /* 무시 */ }
+}
+function startTour() {
+  const steps = TOUR_STEPS.filter(s => document.querySelector(s.sel));
+  if (!steps.length) { localStorage.setItem(TOUR_KEY, '1'); return; }
+  let i = 0;
+  const ov = document.createElement('div'); ov.className = 'tour-ov';
+  document.body.appendChild(ov);
+  const finish = () => { ov.remove(); localStorage.setItem(TOUR_KEY, '1'); };
+  function show() {
+    const s = steps[i];
+    const el = document.querySelector(s.sel);
+    if (!el) { if (i < steps.length - 1) { i++; return show(); } return finish(); }
+    const r = el.getBoundingClientRect(), pad = 6;
+    ov.innerHTML = `
+      <div class="tour-hole" style="top:${r.top - pad}px;left:${r.left - pad}px;width:${r.width + pad * 2}px;height:${r.height + pad * 2}px"></div>
+      <div class="tour-card" id="tourCard">
+        <div class="tour-step">${i + 1} / ${steps.length}</div>
+        <h4>${esc(s.title)}</h4>
+        <p>${esc(s.body)}</p>
+        <div class="tour-actions">
+          <button class="btn btn-sm" id="tourSkip">건너뛰기</button><div class="spacer"></div>
+          ${i > 0 ? '<button class="btn btn-sm" id="tourPrev">이전</button>' : ''}
+          <button class="btn btn-sm btn-primary" id="tourNext">${i === steps.length - 1 ? '시작하기' : '다음'}</button>
+        </div>
+      </div>`;
+    const card = ov.querySelector('#tourCard'), cardW = 320;
+    card.style.left = Math.min(Math.max(8, r.left), window.innerWidth - cardW - 8) + 'px';
+    if (r.bottom + 170 < window.innerHeight) card.style.top = (r.bottom + 12) + 'px';
+    else card.style.bottom = (window.innerHeight - r.top + 12) + 'px';
+    ov.querySelector('#tourSkip').onclick = finish;
+    ov.querySelector('#tourNext').onclick = () => { if (i === steps.length - 1) finish(); else { i++; show(); } };
+    const prev = ov.querySelector('#tourPrev'); if (prev) prev.onclick = () => { i--; show(); };
+  }
+  show();
 }
 
 function renderForcePwChange() {
@@ -365,9 +419,22 @@ async function openNotifPanel() {
   }));
 }
 
+// 화면별 한 줄 목적 문구 — 처음 쓰는 사람이 "이 화면이 무엇을 위한 곳인지" 즉시 파악
+const PURPOSE = {
+  dashboard: '오늘의 업무 현황과 금주 일정을 한눈에 봅니다.',
+  todo: '프로젝트·업무·세부 To-Do로 팀 업무를 등록하고 진행을 추적합니다.',
+  calendar: '입·퇴사, 평가, 업무 목표일을 달력에서 확인합니다.',
+  onboarding: '신규 입사자의 처리 항목을 체크리스트로 빠짐없이 관리합니다.',
+  offboarding: '퇴사자의 정산·해지 항목을 체크리스트로 빠짐없이 관리합니다.',
+  employees: '재직·휴직·퇴직 인원 현황을 조회하고 관리합니다.',
+  activity: '시스템에서 일어난 주요 변경 이력을 확인합니다.',
+  users: '사용자 계정과 권한(관리자/담당자)을 관리합니다.',
+};
 function topbar(title, rightHtml = '') {
+  const hint = PURPOSE[state.route];
   return `<div class="topbar"><h2>${title}</h2><div class="spacer"></div>${rightHtml}
-    <button class="icon-btn" id="themeBtn" title="테마 전환">${state.theme === 'light' ? '🌙' : '☀️'}</button></div>`;
+    <button class="icon-btn" id="themeBtn" title="테마 전환">${state.theme === 'light' ? '🌙' : '☀️'}</button></div>
+    ${hint ? `<div class="view-hint">💡 ${esc(hint)}</div>` : ''}`;
 }
 function wireTopbar(root) { const b = $('#themeBtn', root); if (b) b.addEventListener('click', toggleTheme); }
 
@@ -648,16 +715,16 @@ function renderChecklist(kind, category, tasks, joinDate, leaveDate) {
     const val = tasks?.[t.key] ?? '';
     if (t.type === 'autodate') {
       const auto = computeDate(t.calc, joinDate);
-      return `<div class="check-item"><div class="ci-label">${esc(t.label)}<span class="ci-hint">${esc(t.hint || '')}</span></div>
+      return `<div class="check-item"><div class="ci-label">${esc(t.label)}${descIcon(t.key)}<span class="ci-hint">${esc(t.hint || '')}</span></div>
         <div class="ci-auto">${auto || '—'}</div></div>`;
     }
     if (t.type === 'date') {
-      return `<div class="check-item"><div class="ci-label">${esc(t.label)}</div>
+      return `<div class="check-item"><div class="ci-label">${esc(t.label)}${descIcon(t.key)}</div>
         <input class="input" type="date" data-task="${t.key}" value="${esc(val)}"></div>`;
     }
     if (t.type === 'amount') {
       const done = val !== undefined && val !== null && val !== '';
-      return `<div class="check-item"><div class="ci-label">${esc(t.label)} <span class="pill ${done ? 'done' : 'todo'}" style="margin-left:auto">${done ? '완료' : '미완료'}</span></div>
+      return `<div class="check-item"><div class="ci-label">${esc(t.label)}${descIcon(t.key)} <span class="pill ${done ? 'done' : 'todo'}" style="margin-left:auto">${done ? '완료' : '미완료'}</span></div>
         <input class="input" type="text" placeholder="금액 또는 내용" data-task="${t.key}" value="${esc(val)}"></div>`;
     }
     const opts = OPTS[t.opts];
@@ -665,7 +732,7 @@ function renderChecklist(kind, category, tasks, joinDate, leaveDate) {
     // 현재값이 옵션 목록에 없으면(과거 데이터) 앞에 끼워 넣어 값 유실 방지
     const optList = opts.includes(cur) ? opts : [cur, ...opts];
     const forcedNA = kind === 'off' && t.key === 'toejikgeum' && under1Year(joinDate, leaveDate);
-    return `<div class="check-item"><div class="ci-label">${esc(t.label)} ${pillFor(cur)}</div>
+    return `<div class="check-item"><div class="ci-label">${esc(t.label)}${descIcon(t.key)} ${pillFor(cur)}</div>
       <select class="select" data-task="${t.key}" ${forcedNA ? 'disabled' : ''}>${optList.map(o => `<option ${o === cur ? 'selected' : ''}>${o}</option>`).join('')}</select>
       ${forcedNA ? `<div class="ci-hint" style="margin-top:4px">입사 1년 미만 — 자동 대상아님</div>` : ''}</div>`;
   }).join('')}</div>`;
@@ -980,7 +1047,7 @@ async function listView(view, kind) {
           <th>구분</th><th>${isOn ? '입사일' : '퇴사예정일'}</th>
           ${isOn ? '' : '<th>사직원접수</th>'}
           <th>메모</th>
-          ${defs.map(t => `<th>${esc(t.label)}</th>`).join('')}
+          ${defs.map(t => `<th title="${esc(TASK_DESC[t.key] || t.label)}">${esc(t.label)}${TASK_DESC[t.key] ? ' ⓘ' : ''}</th>`).join('')}
         </tr></thead><tbody>
         ${filtered.length ? filtered.map(r => {
           const tasks = parseTasks(r.tasks);
@@ -1554,7 +1621,7 @@ function renderList(projects, tasks, projOk, taskOk, arch = false) {
       <div class="proj-head"><div class="proj-title">◇ (프로젝트 미연결 업무)</div></div>
       <div class="task-rows">${orphans.map(t => taskRow(t, arch)).join('')}</div>
     </div>`);
-  return `<div class="todo-list">${blocks.join('') || `<div class="empty"><div class="big">${arch ? '📦' : '🗂️'}</div>${arch ? '보관된 업무가 없습니다.' : '표시할 업무가 없습니다.'}</div>`}</div>`;
+  return `<div class="todo-list">${blocks.join('') || `<div class="empty"><div class="big">${arch ? '📦' : '🗂️'}</div>${arch ? '보관된 업무가 없습니다.' : '표시할 업무가 없습니다.<br><span class="t-muted" style="font-size:12.5px">상단 <b>＋업무</b> 또는 빠른 추가(⚡)로 등록하거나, 필터를 확인하세요.</span>'}</div>`}</div>`;
 }
 function projBlock(p, vt, done, total, arch = false) {
   return `
@@ -2318,6 +2385,9 @@ function openSettings() {
         <div class="field full"><label>새 비밀번호 (8자 이상)</label><input class="input" name="next" type="password"></div>
         <div class="field full"><button class="btn btn-sm btn-primary" id="savePw" type="button">비밀번호 변경</button></div>
       </form>
+      <div class="section-title">도움말</div>
+      <p class="t-muted" style="font-size:12px;margin:0 0 8px">처음 사용이 익숙하지 않다면 안내 둘러보기를 다시 볼 수 있습니다.
+        <button class="btn btn-sm" id="tourAgain" type="button" style="margin-left:6px">둘러보기 다시 보기</button></p>
       ${isAdmin ? `
         <div class="section-title">업무 보드 — 업무 구분 관리</div>
         <p class="t-muted" style="font-size:12px;margin:0 0 8px">상위 구분별 세부 업무 구분을 추가/삭제합니다.</p>
@@ -2333,6 +2403,7 @@ function openSettings() {
 
   const root = $('#modal-root');
   root.querySelectorAll('[data-x]').forEach(b => b.addEventListener('click', closeModal));
+  $('#tourAgain', root).addEventListener('click', () => { closeModal(); localStorage.removeItem(TOUR_KEY); startTour(); });
   $('#savePw', root).addEventListener('click', async () => {
     const body = Object.fromEntries(new FormData($('#pwForm', root)).entries());
     if (!body.current || !body.next) return toast('현재/새 비밀번호를 입력하세요', true);
