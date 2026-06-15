@@ -23,6 +23,7 @@ const PROD = process.env.NODE_ENV === 'production' || ON_VERCEL;
 const COOKIE_SECURE = process.env.COOKIE_SECURE === 'true' || PROD;
 app.set('trust proxy', Number(process.env.TRUST_PROXY) || (PROD ? 1 : 0));
 
+app.use('/api/restore', express.json({ limit: '50mb' }));   // 전체 데이터 복원은 큰 본문 허용
 app.use(express.json({ limit: '1mb' }));
 
 // ---- 보안 헤더 ----
@@ -1103,6 +1104,53 @@ app.post('/api/config', requireAuth, requireAdmin, wrap(async (req, res) => {
   await loadConfig(true);
   logAct({ userId: req.user.id, userName: req.user.name, action: '설정 변경', targetType: 'config', detail: upserts.map(u => u[0]).join(',') });
   res.json({ subcategories: effectiveSubcats, opts: _optsOverride });
+}));
+
+/* --- 데이터 백업 / 복원 (관리자) --- */
+// 전체 스냅샷 대상 테이블. sessions/login_attempts(휘발성)은 제외.
+const BACKUP_TABLES = ['users', 'employees', 'projects', 'tasks', 'task_todos', 'task_followups', 'recurring_rules', 'notifications', 'onboarding', 'offboarding', 'app_settings'];
+// 삭제는 자식→부모, 삽입은 부모→자식 순서(FK 안전)
+const RESTORE_DEL_ORDER = ['task_todos', 'task_followups', 'tasks', 'projects', 'notifications', 'onboarding', 'offboarding', 'recurring_rules', 'app_settings', 'employees', 'users'];
+
+app.get('/api/backup', requireAuth, requireAdmin, wrap(async (req, res) => {
+  const tables = {};
+  for (const t of BACKUP_TABLES) tables[t] = await q(`SELECT * FROM ${t}`);
+  res.json({ version: 1, app: 'hr-workspace', exported_at: new Date().toISOString(), tables });
+}));
+
+app.post('/api/restore', requireAuth, requireAdmin, wrap(async (req, res) => {
+  const tables = req.body?.tables;
+  if (!tables || typeof tables !== 'object' || Array.isArray(tables)) return res.status(400).json({ error: '백업 파일 형식이 올바르지 않습니다.' });
+  if (!BACKUP_TABLES.some(t => Array.isArray(tables[t]))) return res.status(400).json({ error: '복원할 데이터가 없습니다.' });
+  const insOrder = [...RESTORE_DEL_ORDER].reverse();
+  const pool = await getPool();
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    for (const t of RESTORE_DEL_ORDER) await client.query(`DELETE FROM ${t}`);
+    for (const t of insOrder) {
+      for (const row of (Array.isArray(tables[t]) ? tables[t] : [])) {
+        const cols = Object.keys(row);
+        if (!cols.length) continue;
+        // jsonb 컬럼(객체/배열)은 문자열로 바인딩
+        const vals = cols.map(c => { const v = row[c]; return (v !== null && typeof v === 'object') ? JSON.stringify(v) : v; });
+        const ph = cols.map((_, i) => '$' + (i + 1)).join(',');
+        await client.query(`INSERT INTO ${t} (${cols.map(c => `"${c}"`).join(',')}) VALUES (${ph})`, vals);
+      }
+    }
+    // 명시적 id 삽입 후 시퀀스 보정(다음 자동 id 충돌 방지). pg-mem 미지원 시 무시.
+    for (const t of insOrder) {
+      try { await client.query(`SELECT setval(pg_get_serial_sequence('${t}', 'id'), GREATEST((SELECT COALESCE(MAX(id), 1) FROM ${t}), 1))`); } catch { /* pg-mem 등 */ }
+    }
+    await client.query('COMMIT');
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    return res.status(400).json({ error: '복원 실패: ' + e.message });
+  } finally {
+    client.release();
+  }
+  _cfgAt = 0; resetRecurringThrottle();   // 설정/스로틀 캐시 무효화
+  res.json({ ok: true });
 }));
 
 /* --- 인앱 알림 --- */

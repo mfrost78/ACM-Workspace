@@ -90,6 +90,7 @@ async function afterAuth() {
   if (state.user?.must_change_pw) { renderForcePwChange(); return; }
   try { applyConfig(await api('GET', '/config')); } catch { /* 설정 로드 실패 시 기본값 유지 */ }
   render();
+  maybeAutoBackup();   // 관리자·폴더 지정 시 하루 1회 자동 로컬 백업(비차단)
 }
 
 function renderForcePwChange() {
@@ -2236,6 +2237,69 @@ async function viewActivity(view) {
     </tbody></table></div></div></div>`;
 }
 
+/* ============ 데이터 백업/복원 (로컬, File System Access API) ============ */
+const BACKUP_SUPPORTED = typeof window !== 'undefined' && 'showDirectoryPicker' in window;
+const BACKUP_KEEP = 14;                         // 보관할 최대 버전 수
+const BACKUP_INTERVAL_MS = 24 * 3600 * 1000;    // 자동 백업 최소 간격(하루 1회)
+const LAST_BACKUP_KEY = 'hrws_last_backup';
+
+// 디렉터리 핸들을 IndexedDB에 보관(재접속 후 재사용)
+function bkIdb() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open('hrws-backup', 1);
+    req.onupgradeneeded = () => req.result.createObjectStore('kv');
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+async function bkSet(key, val) {
+  const db = await bkIdb();
+  return new Promise((res, rej) => { const tx = db.transaction('kv', 'readwrite'); tx.objectStore('kv').put(val, key); tx.oncomplete = () => res(); tx.onerror = () => rej(tx.error); });
+}
+async function bkGet(key) {
+  const db = await bkIdb();
+  return new Promise((res, rej) => { const tx = db.transaction('kv', 'readonly'); const r = tx.objectStore('kv').get(key); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); });
+}
+async function bkPerm(handle, mode = 'readwrite') {
+  if (!handle) return false;
+  if ((await handle.queryPermission({ mode })) === 'granted') return true;
+  return (await handle.requestPermission({ mode })) === 'granted';
+}
+function bkFilename(d = new Date()) {
+  const p = n => String(n).padStart(2, '0');
+  return `backup_${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}_${p(d.getHours())}${p(d.getMinutes())}.json`;
+}
+async function bkPrune(handle, keep = BACKUP_KEEP) {
+  const names = [];
+  for await (const [name, entry] of handle.entries()) if (entry.kind === 'file' && /^backup_.*\.json$/.test(name)) names.push(name);
+  names.sort();   // 파일명에 타임스탬프 → 사전순 = 시간순
+  for (const name of names.slice(0, Math.max(0, names.length - keep))) { try { await handle.removeEntry(name); } catch { /* 무시 */ } }
+}
+async function runBackup(handle) {
+  const data = await api('GET', '/backup');
+  const fh = await handle.getFileHandle(bkFilename(), { create: true });
+  const w = await fh.createWritable(); await w.write(JSON.stringify(data)); await w.close();
+  await bkPrune(handle);
+  localStorage.setItem(LAST_BACKUP_KEY, new Date().toISOString());
+}
+// 접속 시 자동 백업 — 관리자, 폴더 지정됨, 마지막 백업 24h 경과 시 (조용히 수행)
+async function maybeAutoBackup() {
+  try {
+    if (!BACKUP_SUPPORTED || state.user?.role !== 'admin') return;
+    const handle = await bkGet('dirHandle'); if (!handle) return;
+    const last = localStorage.getItem(LAST_BACKUP_KEY);
+    if (last && Date.now() - new Date(last).getTime() < BACKUP_INTERVAL_MS) return;
+    if (!(await bkPerm(handle))) return;
+    await runBackup(handle);
+  } catch { /* 무시 */ }
+}
+async function downloadBackupJSON() {
+  const data = await api('GET', '/backup');
+  const url = URL.createObjectURL(new Blob([JSON.stringify(data)], { type: 'application/json' }));
+  const a = document.createElement('a'); a.href = url; a.download = bkFilename(); document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
 /* ============ 설정(비밀번호 변경) ============ */
 function openSettings() {
   const isAdmin = state.user?.role === 'admin';
@@ -2260,7 +2324,9 @@ function openSettings() {
         <div id="subEdit"></div>
         <div class="section-title">입퇴사 체크리스트 — 선택 옵션 관리</div>
         <p class="t-muted" style="font-size:12px;margin:0 0 8px">드롭다운 선택지를 추가/삭제합니다. 첫 번째 값이 기본(미처리) 상태입니다.</p>
-        <div id="optEdit"></div>` : ''}
+        <div id="optEdit"></div>
+        <div class="section-title">데이터 백업 / 복원</div>
+        <div id="backupBox"></div>` : ''}
     </div>
     <div class="modal-foot"><div class="spacer"></div><button class="btn" data-x>닫기</button>
       ${isAdmin ? `<button class="btn btn-primary" id="saveCfg">설정 저장</button>` : ''}</div>`, 'lg');
@@ -2338,4 +2404,53 @@ function openSettings() {
       toast('설정이 저장되었습니다'); closeModal(); render();
     } catch (e) { toast(e.message, true); }
   });
+
+  // --- 데이터 백업/복원 ---
+  const backupBox = $('#backupBox', root);
+  async function drawBackup() {
+    const handle = BACKUP_SUPPORTED ? await bkGet('dirHandle').catch(() => null) : null;
+    const last = localStorage.getItem(LAST_BACKUP_KEY);
+    backupBox.innerHTML = `
+      ${BACKUP_SUPPORTED ? `<p class="t-muted" style="font-size:12px;margin:0 0 8px">백업 폴더를 지정하면 접속 시 하루 1회 자동 저장되고 최근 ${BACKUP_KEEP}개만 보관됩니다(이후 자동 삭제).</p>
+      <div class="cfg-chips" style="gap:14px">
+        <span>폴더: <b>${handle ? esc(handle.name) : '미지정'}</b></span>
+        <span class="t-muted">최근 백업: ${last ? esc(fmtTs(last, true)) : '없음'}</span>
+      </div>
+      <div class="link-add" style="margin-top:8px;flex-wrap:wrap">
+        <button class="btn btn-sm" type="button" id="bkPick">${handle ? '폴더 변경' : '백업 폴더 지정'}</button>
+        <button class="btn btn-sm btn-primary" type="button" id="bkNow" ${handle ? '' : 'disabled'}>지금 백업</button>
+        <button class="btn btn-sm" type="button" id="bkDl">JSON 다운로드</button>
+        <label class="btn btn-sm" style="cursor:pointer">복원<input type="file" id="bkRestore" accept=".json,application/json" hidden></label>
+      </div>` : `<p class="t-muted" style="font-size:12px">이 브라우저는 폴더 자동 저장을 지원하지 않습니다(Chrome·Edge 권장). 수동 백업/복원은 가능합니다.</p>
+      <div class="link-add" style="flex-wrap:wrap">
+        <button class="btn btn-sm btn-primary" type="button" id="bkDl">JSON 다운로드</button>
+        <label class="btn btn-sm" style="cursor:pointer">복원<input type="file" id="bkRestore" accept=".json,application/json" hidden></label>
+      </div>`}`;
+
+    $('#bkPick', backupBox)?.addEventListener('click', async () => {
+      try { const h = await window.showDirectoryPicker({ mode: 'readwrite' }); await bkSet('dirHandle', h); toast('백업 폴더가 지정되었습니다'); await drawBackup(); }
+      catch { /* 사용자 취소 */ }
+    });
+    $('#bkNow', backupBox)?.addEventListener('click', async () => {
+      try {
+        const h = await bkGet('dirHandle'); if (!h) return;
+        if (!(await bkPerm(h))) return toast('폴더 접근 권한이 필요합니다', true);
+        await runBackup(h); toast('백업이 저장되었습니다'); await drawBackup();
+      } catch (e) { toast('백업 실패: ' + e.message, true); }
+    });
+    $('#bkDl', backupBox)?.addEventListener('click', () => downloadBackupJSON().catch(e => toast(e.message, true)));
+    $('#bkRestore', backupBox)?.addEventListener('change', async (e) => {
+      const file = e.target.files?.[0]; if (!file) return;
+      if (!confirm('현재 모든 데이터를 선택한 백업 파일 내용으로 덮어씁니다.\n이 작업은 되돌릴 수 없으며, 복원 후 다시 로그인해야 합니다. 계속할까요?')) { e.target.value = ''; return; }
+      try {
+        const data = JSON.parse(await file.text());
+        if (!data || !data.tables) throw new Error('올바른 백업 파일이 아닙니다.');
+        await api('POST', '/restore', data);
+        closeModal();
+        alert('복원이 완료되었습니다. 다시 로그인해 주세요.');
+        state.user = null; stopNotifPoll(); renderLogin();
+      } catch (err) { toast('복원 실패: ' + err.message, true); e.target.value = ''; }
+    });
+  }
+  drawBackup();
 }
