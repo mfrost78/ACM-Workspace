@@ -448,10 +448,10 @@ app.delete('/api/employees/:id', requireAuth, wrap(async (req, res) => {
 }));
 
 /* ---------------- Onboarding ---------------- */
-const ONB_FIELDS = ['emp_no', 'name', 'category', 'position', 'org', 'field', 'join_date', 'tasks', 'state', 'rehire', 'memo'];
+const ONB_FIELDS = ['emp_no', 'name', 'category', 'position', 'org', 'field', 'join_date', 'tasks', 'state', 'rehire', 'memo', 'links'];
 const tasksVal = (b) => JSON.stringify(b.tasks || {});
-// 필드별 값 변환 — rehire는 정수 컬럼이라 0/1로 강제(미전송 시 0)
-const onbVal = (b, f) => f === 'tasks' ? tasksVal(b) : f === 'rehire' ? (b.rehire ? 1 : 0) : (b[f] ?? (f === 'state' ? '진행중' : ''));
+// 필드별 값 변환 — rehire는 정수 컬럼이라 0/1로 강제(미전송 시 0), links는 JSON 문자열
+const onbVal = (b, f) => f === 'tasks' ? tasksVal(b) : f === 'rehire' ? (b.rehire ? 1 : 0) : f === 'links' ? normLinks(b.links) : (b[f] ?? (f === 'state' ? '진행중' : ''));
 
 app.get('/api/onboarding', requireAuth, wrap(async (req, res) => {
   bg(autoCompleteDueOnboarding(req.user));
@@ -522,10 +522,11 @@ app.post('/api/onboarding/bulk-delete', requireAuth, wrap(async (req, res) => {
 }));
 
 /* ---------------- Offboarding ---------------- */
-const OFB_FIELDS = ['emp_no', 'name', 'category', 'position', 'org', 'field', 'join_date', 'leave_date', 'resign_date', 'resign_reason', 'tasks', 'state', 'employee_id', 'rehire_planned', 'memo'];
-// 필드별 값 변환 — rehire_planned는 int 컬럼(0/1 강제), employee_id는 null 허용
+const OFB_FIELDS = ['emp_no', 'name', 'category', 'position', 'org', 'field', 'join_date', 'leave_date', 'resign_date', 'resign_reason', 'tasks', 'state', 'employee_id', 'rehire_planned', 'memo', 'links'];
+// 필드별 값 변환 — rehire_planned는 int 컬럼(0/1 강제), employee_id는 null 허용, links는 JSON 문자열
 const ofbVal = (b, f) => f === 'tasks' ? tasksVal(b)
   : f === 'rehire_planned' ? (b.rehire_planned ? 1 : 0)
+  : f === 'links' ? normLinks(b.links)
   : f === 'state' ? (b.state ?? '진행중')
   : f === 'employee_id' ? (b.employee_id ?? null)
   : (b[f] ?? '');
@@ -765,6 +766,18 @@ function rebuildSubcatIndex() {
 }
 rebuildSubcatIndex();
 
+// 파일 링크 정규화 — [{url, label}] 배열. http(s)만 허용(javascript: 등 차단), JSON 문자열 반환.
+function normLinks(v) {
+  let arr = v;
+  if (typeof v === 'string') { try { arr = JSON.parse(v); } catch { arr = []; } }
+  if (!Array.isArray(arr)) return '[]';
+  const out = arr.slice(0, 30).map(x => ({
+    url: String(x?.url || '').trim().slice(0, 2000),
+    label: String(x?.label || '').trim().slice(0, 100),
+  })).filter(x => /^https?:\/\//i.test(x.url));
+  return JSON.stringify(out);
+}
+
 // 설정(app_settings) 로드 — TTL 캐시. 서버리스 다중 인스턴스 간 약간의 지연 허용.
 let _cfgAt = 0, _optsOverride = null;
 const CFG_TTL = 60_000;
@@ -908,7 +921,7 @@ app.get('/api/tasks', requireAuth, wrap(async (req, res) => {
   res.json(rows);
 }));
 
-const TASK_FIELDS = ['project_id', 'category', 'subcategory', 'priority', 'title', 'content', 'start_date', 'target_date', 'done_date', 'status', 'assignee_id', 'assignee_ids'];
+const TASK_FIELDS = ['project_id', 'category', 'subcategory', 'priority', 'title', 'content', 'start_date', 'target_date', 'done_date', 'status', 'assignee_id', 'assignee_ids', 'links'];
 app.post('/api/tasks', requireAuth, wrap(async (req, res) => {
   await loadConfig();
   const b = req.body || {};
@@ -919,6 +932,7 @@ app.post('/api/tasks', requireAuth, wrap(async (req, res) => {
   const ids = normIds(b);   // 복수 담당자 — 대표(assignee_id)는 첫 번째로 동기화
   const vals = TASK_FIELDS.map(f => f === 'assignee_id' ? (ids[0] ?? null)
     : f === 'assignee_ids' ? JSON.stringify(ids)
+    : f === 'links' ? normLinks(b.links)
     : f === 'project_id' ? (b.project_id ? Number(b.project_id) : null)
     : (b[f] ?? (f === 'status' ? '진행중' : f === 'priority' ? '보통' : '')));
   const ph = TASK_FIELDS.map(() => '?').join(',');
@@ -938,7 +952,9 @@ app.put('/api/tasks/:id', requireAuth, wrap(async (req, res) => {
   const err = validTodo(b); if (err) return res.status(400).json({ error: err });
   if (b.subcategory) b.category = SUBCAT_GROUP[b.subcategory];
   const next = {};
-  for (const f of TASK_FIELDS) next[f] = f in b
+  for (const f of TASK_FIELDS) next[f] = f === 'links'
+    ? normLinks('links' in b ? b.links : cur.links)   // jsonb는 항상 JSON 문자열로 (배열 그대로 바인딩 방지)
+    : f in b
     ? (f === 'project_id' ? (b.project_id ? Number(b.project_id) : null) : b[f])
     : cur[f];
   // 복수 담당자 — assignee_ids 또는 assignee_id가 본문에 있으면 갱신, 없으면 기존 유지

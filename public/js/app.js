@@ -690,6 +690,7 @@ async function openEntryModal(kind, data) {
         <div class="section-title">체크리스트 업무</div>
         <div id="checkArea">${renderChecklist(isOn ? 'on' : 'off', d.category, d.tasks, d.join_date, d.leave_date)}</div>
       </form>
+      <div class="link-section"><div class="section-title">파일 링크 <span class="t-muted" style="font-weight:400;font-size:12px">(클라우드 저장소 주소)</span></div><div id="entryLinks"></div></div>
     </div>
     <div class="modal-foot">
       ${editing ? `<button class="btn btn-danger" id="delBtn">삭제</button>
@@ -704,6 +705,7 @@ async function openEntryModal(kind, data) {
   root.querySelectorAll('[data-x]').forEach(b => b.addEventListener('click', closeModal));
   const form = $('#entryForm', root);
   const checkArea = $('#checkArea', root);
+  const linkEd = mountLinkEditor($('#entryLinks', root), d.links);
   let tasks = { ...d.tasks };
 
   function curCategory() { return form.category.value; }
@@ -794,6 +796,7 @@ async function openEntryModal(kind, data) {
     // 체크박스: 미체크 시 FormData에 누락되므로 항상 0/1로 명시
     if (isOn) { const rh = form.querySelector('[name="rehire"]'); body.rehire = rh && rh.checked ? 1 : 0; }
     else { const rp = form.querySelector('[name="rehire_planned"]'); body.rehire_planned = rp && rp.checked ? 1 : 0; }
+    body.links = linkEd.get();
     return body;
   }
 
@@ -1216,6 +1219,45 @@ const catBadge = (c) => `<span class="pill cat cat-${{ '인사': 'a', '총무': 
 const schedText = (r) => { const a = r.start_date || '', b = r.target_date || ''; return a && b ? `${a} ~ ${b}` : (a || b || '—'); };
 const recurMark = (r) => (r.recurring_rule_id ? `<span class="recur-mark" title="정기 업무">🔁</span>` : '');
 
+// 파일 링크 — http(s)만 허용(javascript: 등 차단). 'Link' 버튼으로 새 탭 열기.
+const safeUrl = (u) => /^https?:\/\//i.test(String(u || '').trim()) ? String(u).trim() : '';
+function linkButtons(links) {
+  return (Array.isArray(links) ? links : []).map(l => {
+    const u = safeUrl(l.url); if (!u) return '';
+    return `<a class="link-btn" href="${esc(u)}" target="_blank" rel="noopener noreferrer" data-link title="${esc(l.url)}">🔗 ${esc(l.label || 'Link')}</a>`;
+  }).join('');
+}
+// 링크 편집기를 container에 마운트 — get()으로 현재 링크 배열 반환
+function mountLinkEditor(container, initial) {
+  let links = (Array.isArray(initial) ? initial : []).map(l => ({ url: l.url || '', label: l.label || '' })).filter(l => l.url);
+  function draw() {
+    container.innerHTML = `
+      <div class="link-list">${links.length ? links.map((l, i) => `
+        <div class="link-row">
+          ${safeUrl(l.url) ? `<a class="link-btn" href="${esc(safeUrl(l.url))}" target="_blank" rel="noopener noreferrer">🔗 ${esc(l.label || 'Link')}</a>` : `<span class="link-btn off">🔗 ${esc(l.label || 'Link')}</span>`}
+          <span class="link-url t-muted">${esc(l.url)}</span>
+          <button class="btn btn-sm" type="button" data-linkrm="${i}">삭제</button>
+        </div>`).join('') : '<div class="t-muted" style="font-size:12.5px;padding:2px 0">등록된 링크가 없습니다.</div>'}</div>
+      <div class="link-add">
+        <input class="input" data-linkurl placeholder="링크 주소 (https://...)">
+        <input class="input" data-linklabel placeholder="이름(선택, 기본 Link)" style="max-width:170px">
+        <button class="btn btn-sm" type="button" data-linkadd>＋ 추가</button>
+      </div>`;
+    container.querySelectorAll('[data-linkrm]').forEach(b => b.addEventListener('click', () => { links.splice(Number(b.dataset.linkrm), 1); draw(); }));
+    const add = () => {
+      const urlEl = container.querySelector('[data-linkurl]'), labEl = container.querySelector('[data-linklabel]');
+      const url = urlEl.value.trim(), label = labEl.value.trim();
+      if (!url) return;
+      if (!safeUrl(url)) return toast('http(s):// 로 시작하는 주소를 입력하세요', true);
+      links.push({ url, label }); draw();
+    };
+    container.querySelector('[data-linkadd]').addEventListener('click', add);
+    container.querySelector('[data-linkurl]').addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); add(); } });
+  }
+  draw();
+  return { get: () => links.filter(l => safeUrl(l.url)) };
+}
+
 // D-day/지연 배지 — 진행중 + 목표일 있는 항목만
 function ddayBadge(r) {
   if (r.status !== '진행중' || !r.target_date) return '';
@@ -1363,7 +1405,7 @@ async function viewTodo(view) {
       openProjectModal(Number(el.dataset.proj), refresh);
     }));
     wrap.querySelectorAll('[data-task]').forEach(el => el.addEventListener('click', ev => {
-      if (ev.target.closest('.inline-st,[data-arch],.todo-toggle')) return;
+      if (ev.target.closest('.inline-st,[data-arch],.todo-toggle,.link-btn')) return;
       ev.stopPropagation(); openTaskModal(Number(el.dataset.task), { onSaved: refresh });
     }));
     wrap.querySelectorAll('[data-addtask]').forEach(el => el.addEventListener('click', ev => { ev.stopPropagation(); openTaskModal(null, { project_id: el.dataset.addtask, onSaved: refresh }); }));
@@ -1517,6 +1559,7 @@ function taskRow(t, arch = false) {
       <span class="t-muted asg multi">${assigneeTags(t)}</span>
       <span class="t-muted tr-date">${esc(t.target_date || '—')}</span>
       ${t.fu_count ? `<span class="fu-chip" title="진행상황 ${t.fu_count}건">💬 ${t.fu_count}</span>` : ''}
+      ${linkButtons(t.links)}
       ${arch ? '' : `<button class="todo-toggle" data-todotoggle="${t.id}" title="세부 To-Do 추가">☑${badge}</button>`}
       ${archBtn('tasks', t, arch)}
     </div>
@@ -1774,6 +1817,7 @@ async function openTaskModal(id, opts = {}) {
         <div class="field"><label>목표일</label><input class="input" name="target_date" type="date" value="${esc(d.target_date || '')}"></div>
         <div class="field"><label>완료일</label><input class="input" name="done_date" type="date" value="${esc(d.done_date || '')}"></div>
       </form>
+      <div class="link-section"><div class="section-title">파일 링크 <span class="t-muted" style="font-weight:400;font-size:12px">(클라우드 저장소 주소)</span></div><div id="taskLinks"></div></div>
       ${editing ? `<div class="fu-section"><div class="section-title">진행상황 F/U</div><div id="fuList" class="fu-list"><div class="t-muted">불러오는 중…</div></div>
         <div class="fu-add"><input class="input" type="date" id="fuDate" style="width:auto"><input class="input" id="fuContent" placeholder="진행 내용 입력"><button class="btn btn-sm btn-primary" id="fuAdd">추가</button></div></div>` : ''}
     </div>
@@ -1785,9 +1829,11 @@ async function openTaskModal(id, opts = {}) {
   root.querySelectorAll('[data-x]').forEach(b => b.addEventListener('click', closeModal));
   // 담당자 칩 토글 시각 상태
   root.querySelectorAll('#asgPicker input').forEach(cb => cb.addEventListener('change', () => cb.closest('.asg-opt').classList.toggle('on', cb.checked)));
+  const linkEd = mountLinkEditor($('#taskLinks', root), d.links);
   $('#saveTask', root).addEventListener('click', async () => {
     const body = Object.fromEntries(new FormData($('#taskForm', root)).entries());
     body.assignee_ids = [...root.querySelectorAll('#asgPicker input:checked')].map(i => Number(i.value));
+    body.links = linkEd.get();
     if (!body.title) return toast('제목은 필수입니다', true);
     if (!body.subcategory) return toast('구분을 선택하세요', true);
     try {
