@@ -224,6 +224,7 @@ async function render() {
           <div class="avatar" style="background:${esc(u.color || 'var(--accent)')}">${esc(initial)}</div>
           <div class="meta"><b>${esc(u.name)}</b><span>${esc(u.username)} · ${u.role === 'admin' ? '관리자' : '담당자'}</span></div>
         </div>
+        <button class="icon-btn notif-btn" id="btnNotif" title="알림">🔔<span class="notif-dot" id="notifDot" hidden></span></button>
         <button class="icon-btn" id="btnSettings" title="설정">⚙️</button>
         <button class="icon-btn" id="btnLogout" title="로그아웃">🚪</button>
       </div>
@@ -246,8 +247,10 @@ async function render() {
     if (b) { state.route = b.dataset.route; render(); }
   });
   $('#brandHome').addEventListener('click', () => { state.route = 'dashboard'; render(); });
-  $('#btnLogout').addEventListener('click', async () => { await api('POST', '/auth/logout'); state.user = null; renderLogin(); });
+  $('#btnLogout').addEventListener('click', async () => { await api('POST', '/auth/logout'); state.user = null; stopNotifPoll(); renderLogin(); });
   $('#btnSettings').addEventListener('click', openSettings);
+  $('#btnNotif').addEventListener('click', openNotifPanel);
+  startNotifPoll();
 
   const view = $('#view');
   ({ dashboard: viewDashboard, onboarding: viewOnboarding, offboarding: viewOffboarding,
@@ -287,6 +290,71 @@ async function refreshBadges() {
       if (tog) setNavBadge(tog, sum);
     });
   } catch { /* 무시 */ }
+}
+
+/* ============ 인앱 알림 ============ */
+let notifTimer = null;
+// 미읽음 개수만 가볍게 폴링해 벨 배지 갱신 (60초 주기)
+async function loadNotifCount() {
+  try {
+    const d = await api('GET', '/notifications');
+    const dot = document.getElementById('notifDot');
+    if (!dot) return;
+    if (d.unread > 0) { dot.textContent = d.unread > 99 ? '99+' : d.unread; dot.hidden = false; }
+    else { dot.textContent = ''; dot.hidden = true; }
+  } catch { /* 무시 */ }
+}
+function startNotifPoll() { loadNotifCount(); if (!notifTimer) notifTimer = setInterval(loadNotifCount, 60_000); }
+function stopNotifPoll() { if (notifTimer) { clearInterval(notifTimer); notifTimer = null; } }
+
+function notifOutside(e) {
+  const panel = document.getElementById('notifPanel');
+  if (!panel) { document.removeEventListener('click', notifOutside, true); return; }
+  if (!panel.contains(e.target) && !e.target.closest('#btnNotif')) {
+    panel.remove(); document.removeEventListener('click', notifOutside, true);
+  }
+}
+function closeNotifPanel() {
+  const p = document.getElementById('notifPanel');
+  if (p) p.remove();
+  document.removeEventListener('click', notifOutside, true);
+}
+async function openNotifPanel() {
+  if (document.getElementById('notifPanel')) { closeNotifPanel(); return; }   // 토글
+  let d;
+  try { d = await api('GET', '/notifications'); } catch { d = { items: [], unread: 0 }; }
+  const items = d.items || [];
+  const panel = document.createElement('div');
+  panel.id = 'notifPanel';
+  panel.className = 'notif-panel';
+  panel.innerHTML = `
+    <div class="notif-head"><b>알림</b>${items.some(n => !n.read) ? '<button class="btn btn-sm" id="notifReadAll">모두 읽음</button>' : ''}</div>
+    <div class="notif-list">
+      ${items.length ? items.map(n => `
+        <div class="notif-item ${n.read ? '' : 'unread'}" data-id="${n.id}" ${n.task_id ? `data-task="${n.task_id}"` : ''}>
+          <div class="notif-title">${esc(n.title)}</div>
+          ${n.body ? `<div class="notif-body t-muted">${esc(n.body)}</div>` : ''}
+          <div class="notif-meta t-muted">${esc(n.actor_name || '')}${n.actor_name ? ' · ' : ''}${esc(fmtTs(n.created_at, false))}</div>
+        </div>`).join('') : '<div class="empty" style="padding:28px 10px">알림이 없습니다.</div>'}
+    </div>`;
+  document.querySelector('.topnav-right').appendChild(panel);
+  setTimeout(() => document.addEventListener('click', notifOutside, true), 0);
+
+  $('#notifReadAll', panel)?.addEventListener('click', async (e) => {
+    e.stopPropagation();
+    try { await api('POST', '/notifications/read', {}); } catch { /* 무시 */ }
+    closeNotifPanel(); loadNotifCount();
+  });
+  panel.querySelectorAll('.notif-item').forEach(el => el.addEventListener('click', async () => {
+    const nid = Number(el.dataset.id);
+    try { await api('POST', '/notifications/read', { ids: [nid] }); } catch { /* 무시 */ }
+    closeNotifPanel(); loadNotifCount();
+    if (el.dataset.task) {
+      const tid = Number(el.dataset.task);
+      if (state.route !== 'todo') { state.route = 'todo'; render(); setTimeout(() => openTaskModal(tid, {}), 100); }
+      else openTaskModal(tid, {});
+    }
+  }));
 }
 
 function topbar(title, rightHtml = '') {

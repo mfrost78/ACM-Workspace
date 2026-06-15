@@ -275,6 +275,27 @@ table.xls-tbl .cell-select.tone-na   { background-color: var(--tone-na-bg);   co
   background: var(--bg-elevated); border: none; transition: background .15s; }
 .icon-btn:hover { background: var(--bg-hover); }
 
+/* ===== 인앱 알림 ===== */
+.notif-btn { position: relative; }
+.notif-dot { position: absolute; top: -2px; right: -2px; min-width: 16px; height: 16px; padding: 0 4px;
+  border-radius: 8px; background: var(--red); color: #fff; font-size: 10px; font-weight: 700;
+  display: flex; align-items: center; justify-content: center; line-height: 1; }
+.topnav-right { position: relative; }
+.notif-panel { position: absolute; top: 46px; right: 0; width: 320px; max-width: 90vw; z-index: 60;
+  background: var(--bg-elevated); border: 1px solid var(--border-strong); border-radius: 4px;
+  box-shadow: 0 12px 36px rgba(0,0,0,.18); overflow: hidden; }
+.notif-head { display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 12px 14px; border-bottom: 1px solid var(--border); font-size: 14px; }
+.notif-list { max-height: 60vh; overflow-y: auto; }
+.notif-item { padding: 11px 14px; border-bottom: 1px solid var(--border); cursor: pointer; }
+.notif-item:last-child { border-bottom: none; }
+.notif-item:hover { background: var(--bg-hover); }
+.notif-item.unread { background: var(--brand-soft); box-shadow: inset 3px 0 0 0 var(--brand); }
+.notif-item.unread:hover { background: var(--accent-soft); }
+.notif-title { font-size: 13px; font-weight: 600; }
+.notif-body { font-size: 12px; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.notif-meta { font-size: 11px; margin-top: 3px; }
+
 /* ===== Modal ===== */
 .modal-backdrop { position: fixed; inset: 0; background: var(--backdrop); backdrop-filter: blur(3px);
   display: grid; place-items: center; padding: 24px; z-index: 100; animation: fade .2s; }

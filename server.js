@@ -88,6 +88,22 @@ const bg = (promise) => { promise.catch(e => console.error('백그라운드 동�
 // (드물게 서버리스 인스턴스 정지 시 일부 누락 가능하나 기능상 영향 없음)
 const logAct = (o) => { bg(logActivity(o)); };
 
+// 인앱 알림 1건 생성 — 본인(actor)에게는 보내지 않음
+async function pushNotif({ userId, type, title, body, taskId, actor }) {
+  userId = Number(userId);
+  if (!userId || (actor && userId === actor.id)) return;
+  await run(
+    `INSERT INTO notifications (user_id, type, title, body, task_id, actor_id, actor_name) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    [userId, type, title, body ?? '', taskId ?? null, actor?.id ?? null, actor?.name ?? '']);
+}
+// 업무 배정/변경 알림 — assigned: 새로 배정된 담당자, updated: 기존 담당자(내용 변경 시)
+async function notifyTask({ assigned = [], updated = [], task, taskId, actor }) {
+  const jobs = [];
+  for (const uid of assigned) jobs.push(pushNotif({ userId: uid, type: 'task_assigned', title: '새 업무가 배정되었습니다', body: task.title, taskId, actor }));
+  for (const uid of updated) jobs.push(pushNotif({ userId: uid, type: 'task_updated', title: '담당 업무가 변경되었습니다', body: `${task.title} · ${task.status || ''}`.trim(), taskId, actor }));
+  await Promise.all(jobs);
+}
+
 // KST 기준 오늘 날짜 ('YYYY-MM-DD')
 function kstTodayStr() {
   return new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 10);
@@ -843,6 +859,7 @@ app.post('/api/tasks', requireAuth, wrap(async (req, res) => {
   const ph = TASK_FIELDS.map(() => '?').join(',');
   const row = await one(`INSERT INTO tasks (${TASK_FIELDS.join(',')}, created_by) VALUES (${ph}, ?) RETURNING *`, [...vals, req.user.id]);
   logAct({ userId: req.user.id, userName: req.user.name, action: '업무 등록', targetType: 'task', targetId: row.id, detail: b.title });
+  bg(notifyTask({ assigned: ids, task: row, taskId: row.id, actor: req.user }));   // 배정 담당자에게 알림
   res.json(row);
 }));
 
@@ -859,7 +876,8 @@ app.put('/api/tasks/:id', requireAuth, wrap(async (req, res) => {
     ? (f === 'project_id' ? (b.project_id ? Number(b.project_id) : null) : b[f])
     : cur[f];
   // 복수 담당자 — assignee_ids 또는 assignee_id가 본문에 있으면 갱신, 없으면 기존 유지
-  const ids = ('assignee_ids' in b || 'assignee_id' in b) ? normIds(b) : taskAssignees(cur);
+  const oldIds = taskAssignees(cur);
+  const ids = ('assignee_ids' in b || 'assignee_id' in b) ? normIds(b) : oldIds;
   next.assignee_id = ids[0] ?? null;
   next.assignee_ids = JSON.stringify(ids);
   // 완료로 전환 시 완료일 자동 입력 (아카이브 자동 판정 기준)
@@ -867,6 +885,12 @@ app.put('/api/tasks/:id', requireAuth, wrap(async (req, res) => {
   await run(`UPDATE tasks SET ${TASK_FIELDS.map(f => `${f}=?`).join(',')}, updated_at=now() WHERE id=?`,
     [...TASK_FIELDS.map(f => next[f]), id]);
   logAct({ userId: req.user.id, userName: req.user.name, action: '업무 수정', targetType: 'task', targetId: id, detail: next.title });
+  // 알림: 새로 배정된 담당자 / 내용이 바뀐 경우 기존 담당자
+  const meaningful = ['title', 'content', 'start_date', 'target_date', 'done_date', 'status', 'priority', 'subcategory'];
+  const changed = meaningful.some(f => String(cur[f] ?? '') !== String(next[f] ?? ''));
+  const added = ids.filter(i => !oldIds.includes(i));
+  const kept = ids.filter(i => oldIds.includes(i));
+  bg(notifyTask({ assigned: added, updated: changed ? kept : [], task: next, taskId: id, actor: req.user }));
   res.json({ ok: true });
 }));
 
@@ -918,6 +942,24 @@ for (const table of ['tasks', 'projects']) {
     res.json({ ok: true });
   }));
 }
+
+/* --- 인앱 알림 --- */
+app.get('/api/notifications', requireAuth, wrap(async (req, res) => {
+  const items = await q(`SELECT * FROM notifications WHERE user_id = ? ORDER BY id DESC LIMIT 30`, [req.user.id]);
+  const unread = (await one(`SELECT COUNT(*)::int c FROM notifications WHERE user_id = ? AND read = 0`, [req.user.id])).c;
+  res.json({ items, unread });
+}));
+
+app.post('/api/notifications/read', requireAuth, wrap(async (req, res) => {
+  const ids = Array.isArray(req.body?.ids) ? req.body.ids.map(Number).filter(Boolean) : null;
+  if (ids && ids.length) {
+    const ph = ids.map(() => '?').join(',');
+    await run(`UPDATE notifications SET read = 1 WHERE user_id = ? AND id IN (${ph})`, [req.user.id, ...ids]);
+  } else {
+    await run(`UPDATE notifications SET read = 1 WHERE user_id = ? AND read = 0`, [req.user.id]);
+  }
+  res.json({ ok: true });
+}));
 
 /* --- 정기(반복) 업무 규칙 --- */
 const RECUR_FREQ_SET = new Set(['weekly', 'monthly', 'yearly']);
