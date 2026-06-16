@@ -675,13 +675,13 @@ app.get('/api/calendar', requireAuth, wrap(async (req, res) => {
 
   // 세부 To-Do(생성일 기준) — todos=1일 때만, 본인 담당 업무의 것만 표시
   if (req.query.todos === '1') {
-    const todos = await q(`SELECT td.id, td.task_id, td.content, td.done, td.created_at,
+    const todos = await q(`SELECT td.id, td.task_id, td.content, td.done, td.due_date, td.created_at,
                                   t.title AS task_title, t.assignee_id, t.assignee_ids
                              FROM task_todos td JOIN tasks t ON t.id = td.task_id
                             WHERE t.status <> '취소' AND t.archived_at IS NULL`);
     for (const td of todos) {
       if (!taskAssignees(td).includes(req.user.id)) continue;
-      const date = tsToDateStr(td.created_at);
+      const date = td.due_date || tsToDateStr(td.created_at);
       if (from && date < from) continue;
       if (to && date > to) continue;
       events.push({ type: 'todo', id: td.id, task_id: td.task_id, date, title: td.content, done: !!td.done, task_title: td.task_title });
@@ -924,7 +924,7 @@ app.get('/api/tasks', requireAuth, wrap(async (req, res) => {
     // F/U 건수 + 최근 진행내용 병합용 (fu_date, id 순 정렬 → 마지막이 최신)
     q(`SELECT task_id, content, fu_date, id FROM task_followups ORDER BY task_id, fu_date, id`),
     // 세부 To-Do (업무 하위 체크 항목)
-    q(`SELECT id, task_id, content, done, created_at FROM task_todos ORDER BY sort, id`),
+    q(`SELECT id, task_id, content, done, due_date, created_at FROM task_todos ORDER BY sort, id`),
   ]);
   // 아카이브 분리: 기본은 제외, ?archived=1 이면 아카이브만
   const showArchived = req.query.archived === '1';
@@ -1027,7 +1027,7 @@ app.delete('/api/followups/:id', requireAuth, wrap(async (req, res) => {
 
 /* --- 업무 세부 To-Do (단순 체크 항목) --- */
 app.get('/api/tasks/:id/todos', requireAuth, wrap(async (req, res) => {
-  res.json(await q(`SELECT id, task_id, content, done, created_at FROM task_todos WHERE task_id = ? ORDER BY sort, id`, [Number(req.params.id)]));
+  res.json(await q(`SELECT id, task_id, content, done, due_date, created_at FROM task_todos WHERE task_id = ? ORDER BY sort, id`, [Number(req.params.id)]));
 }));
 
 app.post('/api/tasks/:id/todos', requireAuth, wrap(async (req, res) => {
@@ -1037,9 +1037,10 @@ app.post('/api/tasks/:id/todos', requireAuth, wrap(async (req, res) => {
   const task = await one('SELECT id FROM tasks WHERE id = ?', [taskId]);
   if (!task) return res.status(404).json({ error: '업무 없음' });
   const sortRow = await one(`SELECT COALESCE(MAX(sort), 0) + 1 AS s FROM task_todos WHERE task_id = ?`, [taskId]);
+  const due = (req.body?.due_date || '').trim() || null;
   const row = await one(
-    `INSERT INTO task_todos (task_id, content, sort, created_by) VALUES (?, ?, ?, ?) RETURNING id, task_id, content, done, created_at`,
-    [taskId, content, sortRow.s, req.user.id]);
+    `INSERT INTO task_todos (task_id, content, due_date, sort, created_by) VALUES (?, ?, ?, ?, ?) RETURNING id, task_id, content, done, due_date, created_at`,
+    [taskId, content, due, sortRow.s, req.user.id]);
   res.json(row);
 }));
 
@@ -1049,9 +1050,10 @@ app.put('/api/todos/:id', requireAuth, wrap(async (req, res) => {
   const sets = [], params = [];
   if ('content' in b) { sets.push('content = ?'); params.push(String(b.content).trim()); }
   if ('done' in b) { sets.push('done = ?'); params.push(b.done ? 1 : 0); }
+  if ('due_date' in b) { sets.push('due_date = ?'); params.push(b.due_date || null); }
   if (!sets.length) return res.status(400).json({ error: '변경 항목 없음' });
   params.push(id);
-  const row = await one(`UPDATE task_todos SET ${sets.join(', ')} WHERE id = ? RETURNING id, task_id, content, done, created_at`, params);
+  const row = await one(`UPDATE task_todos SET ${sets.join(', ')} WHERE id = ? RETURNING id, task_id, content, done, due_date, created_at`, params);
   if (!row) return res.status(404).json({ error: '없음' });
   res.json(row);
 }));

@@ -1203,7 +1203,8 @@ async function viewCalendar(view) {
                 <button class="cal-add" data-add="${ds}" title="이 날짜에 업무 추가">＋</button></div>
               ${evs.map(ev => {
                 if (ev.type === 'todo') {
-                  return `<div class="cal-ev todo ${ev.done ? 'done-state' : ''}" data-type="todo" data-task="${ev.task_id}"
+                  return `<div class="cal-ev todo ${ev.done ? 'done-state' : ''}" draggable="true"
+                    data-type="todo" data-todoid="${ev.id}" data-task="${ev.task_id}"
                     title="${ev.done ? '완료' : '미완료'} · ${esc(ev.title)} — ${esc(ev.task_title || '')}">
                     <span class="cal-ev-t">${ev.done ? '☑' : '☐'} ${esc(ev.title)}</span></div>`;
                 }
@@ -1235,6 +1236,25 @@ async function viewCalendar(view) {
       else if (t === 'onboarding' || t === 'eval') openOnboarding(id);
       else if (t === 'task') openTaskModal(id, { onSaved: async () => { await load(); draw(); } });
       else if (t === 'project') openProjectModal(id, async () => { await load(); draw(); });
+    });
+
+    // To-Do 드래그 → 날짜 셀 드롭으로 due_date 변경
+    let dragTodoId = null;
+    body.querySelectorAll('.cal-ev.todo[draggable]').forEach(el => {
+      el.addEventListener('dragstart', e => { dragTodoId = el.dataset.todoid; e.dataTransfer.effectAllowed = 'move'; el.classList.add('dragging'); });
+      el.addEventListener('dragend', () => { dragTodoId = null; el.classList.remove('dragging'); });
+    });
+    body.querySelectorAll('.cal-cell:not(.dim)').forEach(cell => {
+      cell.addEventListener('dragover', e => { if (!dragTodoId) return; e.preventDefault(); cell.classList.add('drop-hover'); });
+      cell.addEventListener('dragleave', () => cell.classList.remove('drop-hover'));
+      cell.addEventListener('drop', async e => {
+        e.preventDefault(); cell.classList.remove('drop-hover');
+        if (!dragTodoId) return;
+        const dateStr = cell.querySelector('[data-add]')?.dataset.add;
+        if (!dateStr) return;
+        try { await api('PUT', `/todos/${dragTodoId}`, { due_date: dateStr }); await load(); draw(); }
+        catch (err) { toast(err.message, true); }
+      });
     });
   }
   draw();
@@ -1498,6 +1518,14 @@ async function viewTodo(view) {
         try { await api('PUT', `/todos/${check.dataset.todo}`, { done: check.checked ? 1 : 0 }); line.classList.toggle('done', check.checked); }
         catch (e) { toast(e.message, true); check.checked = !check.checked; }
       });
+      const dateInput = line.querySelector('.todo-due');
+      if (dateInput) {
+        dateInput.addEventListener('click', ev => ev.stopPropagation());
+        dateInput.addEventListener('change', async () => {
+          try { await api('PUT', `/todos/${dateInput.dataset.tododate}`, { due_date: dateInput.value }); }
+          catch (e) { toast(e.message, true); }
+        });
+      }
       const del = line.querySelector('.todo-del');
       del.addEventListener('click', async ev => {
         ev.stopPropagation(); ev.preventDefault();
@@ -1554,10 +1582,11 @@ async function viewTodo(view) {
 // ---- 세부 To-Do (업무 하위 단순 체크 항목) ----
 const todoOpen = new Set();   // 항목이 없어도 입력창을 펼친 업무 id (스크롤 절약: 평소엔 숨김)
 function todoLineHTML(td) {
+  const disp = td.due_date || '';
   return `<label class="todo-line ${td.done ? 'done' : ''}" data-todoline="${td.id}">
     <input type="checkbox" class="todo-check" data-todo="${td.id}" ${td.done ? 'checked' : ''}>
     <span class="todo-text">${esc(td.content)}</span>
-    <span class="todo-date t-muted">${esc((td.created_at || '').slice(0, 10))}</span>
+    <input type="date" class="todo-due" data-tododate="${td.id}" value="${esc(disp)}" title="마감일">
     <button class="todo-del" data-todel="${td.id}" title="삭제">×</button>
   </label>`;
 }
@@ -1883,15 +1912,16 @@ async function openTaskModal(id, opts = {}) {
         <div class="field"><label>중요도</label><select class="select" name="priority">${TODO_PRIORITY.map(p => `<option ${d.priority === p ? 'selected' : ''}>${esc(p)}</option>`).join('')}</select></div>
         <div class="field"><label>상태</label><select class="select" name="status">${TODO_STATUS.map(s => `<option ${d.status === s ? 'selected' : ''}>${esc(s)}</option>`).join('')}</select></div>
         <div class="field full"><label>제목 *</label><input class="input" name="title" value="${esc(d.title || '')}" required></div>
-        <div class="field full"><label>내용 <span class="lbl-hint">설명·배경 (진행 기록은 아래 F/U, 참고자료는 파일 링크)</span></label><textarea class="input" name="content" rows="3" placeholder="업무의 설명·배경을 적습니다">${esc(d.content || '')}</textarea></div>
         <div class="field full"><label>담당자 (복수 선택 가능)</label>${assigneePicker(selAsg)}</div>
         <div class="field"><label>시작일</label><input class="input" name="start_date" type="date" value="${esc(d.start_date || '')}"></div>
         <div class="field"><label>목표일</label><input class="input" name="target_date" type="date" value="${esc(d.target_date || '')}"></div>
         <div class="field"><label>완료일</label><input class="input" name="done_date" type="date" value="${esc(d.done_date || '')}"></div>
       </form>
       <div class="link-section"><div class="section-title">파일 링크 <span class="t-muted" style="font-weight:400;font-size:12px">(클라우드 저장소 주소)</span></div><div id="taskLinks"></div></div>
-      ${editing ? `<div class="fu-section"><div class="section-title">진행상황 F/U <span class="t-muted" style="font-weight:400;font-size:12px">(날짜별 진행 기록)</span></div><div id="fuList" class="fu-list"><div class="t-muted">불러오는 중…</div></div>
-        <div class="fu-add"><input class="input" type="date" id="fuDate" style="width:auto"><input class="input" id="fuContent" placeholder="진행 내용 입력"><button class="btn btn-sm btn-primary" id="fuAdd">추가</button></div></div>` : ''}
+      <div class="fu-section"><div class="section-title">진행상황 F/U <span class="t-muted" style="font-weight:400;font-size:12px">(날짜별 진행 기록)</span></div>
+        <div id="fuList" class="fu-list">${editing ? '<div class="t-muted">불러오는 중…</div>' : '<div class="t-muted">저장 후 진행 기록을 추가할 수 있습니다.</div>'}</div>
+        ${editing ? `<div class="fu-add"><input class="input" type="date" id="fuDate" style="width:auto"><input class="input" id="fuContent" placeholder="진행 내용 입력"><button class="btn btn-sm btn-primary" id="fuAdd">추가</button></div>` : ''}
+      </div>
     </div>
     <div class="modal-foot">
       ${editing ? `<button class="btn btn-danger" id="delTask">삭제</button>` : ''}<div class="spacer"></div>
