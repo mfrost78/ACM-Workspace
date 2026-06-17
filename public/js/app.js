@@ -697,6 +697,8 @@ function renderChecklist(kind, category, tasks, joinDate, leaveDate) {
   return `<div class="check-grid">${act.map(t => {
     const val = tasks?.[t.key] ?? '';
     if (t.type === 'autodate') {
+      const hideEval = tasks?.daesang === '미대상' && (t.key === 'pyeongga_yejeong' || t.key === 'pyeongga_gyobu');
+      if (hideEval) return '';
       const auto = computeDate(t.calc, joinDate);
       return `<div class="check-item"><div class="ci-label">${esc(t.label)}${descIcon(t.key)}<span class="ci-hint">${esc(t.hint || '')}</span></div>
         <div class="ci-auto">${auto || '—'}</div></div>`;
@@ -827,6 +829,10 @@ async function openEntryModal(kind, data) {
     if (el.tagName === 'SELECT') {
       const lbl = el.parentElement.querySelector('.ci-label .pill');
       if (lbl) { lbl.textContent = el.value; lbl.className = `pill ${STATE_TONE[el.value] || 'na'}`; lbl.style.marginLeft = 'auto'; }
+      // 평가대상 변경 시 평가예정일/교부일 표시 여부 재렌더
+      if (el.dataset.task === 'daesang') {
+        checkArea.innerHTML = renderChecklist(isOn ? 'on' : 'off', curCategory(), tasks, curJoin(), curLeave());
+      }
     } else if (el.type === 'number') {
       const lbl = el.parentElement.querySelector('.ci-label .pill');
       if (lbl) {
@@ -895,8 +901,8 @@ async function openOffboarding(id) { const d = await api('GET', `/offboarding/${
 // 입사자/퇴사자 목록 → CSV 행렬(보이는 항목 + 체크리스트 값 전체)
 function listToAoa(kind, rows, defs) {
   const isOn = kind === 'on';
-  const head = ['사번', '성명', '구분', '직급', '분야', '소속', isOn ? '입사일' : '퇴사예정일'];
-  if (!isOn) head.push('사직원접수', '재입사예정');
+  const head = ['사번', '성명', '구분', '직급', '분야', '소속', isOn ? '입사일' : '입사일'];
+  if (!isOn) head.push('퇴사예정일', '사직원접수', '재입사예정');
   if (isOn) head.push('재입사');
   head.push('상태', '진행률(%)', '메모', ...defs.map(t => t.label));
   const aoa = [head];
@@ -905,8 +911,8 @@ function listToAoa(kind, rows, defs) {
     const eff = isOn ? tasks : effectiveTasks(defs, 'off', r.category, tasks, r.join_date, r.leave_date);
     const pr = progress(defs, r.category, eff);
     const active = activeTasks(defs, r.category);
-    const row = [r.emp_no || '', r.name || '', r.category || '', r.position || '', r.field || '', r.org || '', (isOn ? r.join_date : r.leave_date) || ''];
-    if (!isOn) row.push(r.resign_date || '', r.rehire_planned ? '예' : '');
+    const row = [r.emp_no || '', r.name || '', r.category || '', r.position || '', r.field || '', r.org || '', r.join_date || ''];
+    if (!isOn) row.push(r.leave_date || '', r.resign_date || '', r.rehire_planned ? '예' : '');
     if (isOn) row.push(r.rehire ? '예' : '');
     row.push(r.state || '', pr, r.memo || '');
     for (const t of defs) {
@@ -1007,19 +1013,20 @@ async function listView(view, kind) {
 
   // 검색/필터 변경 시 테이블 영역만 갱신(검색 input은 그대로 유지)
   function renderTable() {
+    const prevScroll = resultEl.querySelector('.table-wrap')?.scrollLeft || 0;
     const filtered = applyFilter();
     countEl.textContent = `${filtered.length}건`;
     bulkDel.disabled = !selected.size;
     bulkDel.textContent = `선택 삭제${selected.size ? ` (${selected.size})` : ''}`;
 
-    const colCount = 1 + (2 + (isOn ? 0 : 1)) + 1 + defs.length + 3;   // +메모
+    const colCount = 1 + (2 + (isOn ? 0 : 2)) + 1 + defs.length + 3;   // +메모, +입사일(퇴사)
     resultEl.innerHTML = `
       <div class="card"><div class="card-body"><div class="table-wrap">
         <table class="tbl xls-tbl"><thead><tr>
           <th class="sticky-col sel-col"><input type="checkbox" id="selAll" ${filtered.length && filtered.every(r => selected.has(r.id)) ? 'checked' : ''}></th>
           <th class="sticky-col name-col">대상자</th>
           <th>진행률</th><th>상태</th>
-          <th>구분</th><th>${isOn ? '입사일' : '퇴사예정일'}</th>
+          <th>구분</th>${!isOn ? '<th>입사일</th>' : ''}<th>${isOn ? '입사일' : '퇴사예정일'}</th>
           ${isOn ? '' : '<th>사직원접수</th>'}
           <th>메모</th>
           ${defs.map(t => `<th title="${esc(TASK_DESC[t.key] || t.label)}">${esc(t.label)}${TASK_DESC[t.key] ? ' ⓘ' : ''}</th>`).join('')}
@@ -1029,18 +1036,23 @@ async function listView(view, kind) {
           const eff = isOn ? tasks : effectiveTasks(defs, 'off', r.category, tasks, r.join_date, r.leave_date);
           const pr = progress(defs, r.category, eff);
           const active = activeTasks(defs, r.category);
+          const evalNA = tasks.daesang === '미대상';
           return `<tr data-id="${r.id}">
             <td class="sticky-col sel-col"><input type="checkbox" class="rowSel" data-id="${r.id}" ${selected.has(r.id) ? 'checked' : ''}></td>
             <td class="t-strong sticky-col name-col"><span class="name-link" data-id="${r.id}">${esc(r.name)}</span> ${r.emp_no ? `<span class="t-muted">${esc(r.emp_no)}</span>` : ''}${isOn && r.rehire ? ' <span class="pill blue" style="font-size:10px">재입사</span>' : ''}${!isOn && r.rehire_planned ? ' <span class="pill blue" style="font-size:10px">재입사예정</span>' : ''}</td>
             <td>${progBar(pr)}</td>
             <td><span class="pill ${r.state === '완료' ? 'done' : 'blue'}">${esc(r.state)}</span></td>
             <td><span class="pill gray">${esc(r.category)}</span></td>
+            ${!isOn ? `<td>${esc(r.join_date) || '—'}</td>` : ''}
             <td>${esc(isOn ? r.join_date : r.leave_date) || '—'}</td>
             ${isOn ? '' : `<td>${esc(r.resign_date) || '—'}</td>`}
             <td><input type="text" class="cell-input memo-input" placeholder="메모" data-id="${r.id}" data-memo="1" value="${esc(r.memo || '')}"></td>
             ${defs.map(t => {
               if (!active.includes(t)) return `<td class="cell-na">—</td>`;
-              if (t.type === 'autodate') return `<td class="cell-na">${esc(computeDate(t.calc, r.join_date)) || '—'}</td>`;
+              if (t.type === 'autodate') {
+                const hideEval = evalNA && (t.key === 'pyeongga_yejeong' || t.key === 'pyeongga_gyobu');
+                return `<td class="cell-na">${hideEval ? '—' : (esc(computeDate(t.calc, r.join_date)) || '—')}</td>`;
+              }
               const forcedNA = !isOn && t.key === 'toejikgeum' && under1Year(r.join_date, r.leave_date);
               if (forcedNA) return `<td class="cell-na">대상아님</td>`;
               if (t.type === 'date') return `<td><input type="date" class="cell-input" data-id="${r.id}" data-task="${t.key}" value="${esc(tasks[t.key] || '')}"></td>`;
@@ -1062,6 +1074,8 @@ async function listView(view, kind) {
       const w = Math.ceil(selColEl.getBoundingClientRect().width);
       resultEl.querySelectorAll('table.xls-tbl .name-col').forEach(el => { el.style.left = `${w}px`; });
     }
+    // 드롭다운 변경 후 재렌더 시 스크롤 위치 복원
+    if (prevScroll) { const tw = resultEl.querySelector('.table-wrap'); if (tw) tw.scrollLeft = prevScroll; }
 
     // 이름 클릭시에만 상세 팝업 오픈
     resultEl.querySelectorAll('.name-link').forEach(el => el.addEventListener('click', () => {
