@@ -851,3 +851,5 @@ table.xls-tbl thead th[title] { cursor: help; }
 .pill, .prio, .dday, .chip, .fu-chip, .cal-ev, .wk-ev { border-radius: 2px !important; }
 /* 원형 유지: 아바타·색점·뱃지 카운트·색상 스와치 */
 .avatar, .udot, .dot, .color-swatch, .nav-item .badge, .nav-menu-item .badge { border-radius: 50% !important; }
+/* 이달/진행중 두 숫자를 함께 표기하는 뱃지는 원형 대신 알약형 */
+.nav-menu-item .badge.badge-dual { border-radius: 9px !important; min-width: auto; padding: 0 7px; }

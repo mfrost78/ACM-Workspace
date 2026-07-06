@@ -190,7 +190,7 @@ const NAV = [
   { id: 'calendar', ic: '📅', label: '캘린더' },
   { group: '입퇴사', ic: '🔄', items: [
     { id: 'onboarding', ic: '📥', label: '입사자 관리', badgeKey: 'onbOpen' },
-    { id: 'offboarding', ic: '📤', label: '퇴사자 관리', badgeKey: 'ofbOpen' },
+    { id: 'offboarding', ic: '📤', label: '퇴사자 관리', badgeKey: 'ofbOpen', dualBadge: ['ofbThisMonth', 'ofbOpen'] },
   ] },
   { group: '데이터', ic: '📊', items: [
     { id: 'employees', ic: '👥', label: '재직자 현황' },
@@ -245,7 +245,8 @@ function navHtml(u) {
       <div class="nav-menu">
         ${items.map(it => `<button class="nav-menu-item ${state.route === it.id ? 'active' : ''}" data-route="${it.id}">
           <span class="ic">${it.ic}</span><span class="lbl">${esc(it.label)}</span>
-          ${it.badgeKey && dash[it.badgeKey] ? `<span class="badge">${dash[it.badgeKey]}</span>` : ''}
+          ${it.dualBadge ? `<span class="badge badge-dual" title="이달 퇴사자 / 진행중 퇴사자">${dash[it.dualBadge[0]] ?? 0} / ${dash[it.dualBadge[1]] ?? 0}</span>`
+            : (it.badgeKey && dash[it.badgeKey] ? `<span class="badge">${dash[it.badgeKey]}</span>` : '')}
         </button>`).join('')}
       </div>
     </div>`;
@@ -747,7 +748,8 @@ async function openEntryModal(kind, data) {
     </div>
     <div class="modal-foot">
       ${editing ? `<button class="btn btn-danger" id="delBtn">삭제</button>
-        ${d.state !== '완료' ? `<button class="btn" id="completeBtn">${isOn ? '입사 확정' : '퇴사 확정'}</button>` : `<span class="pill done">완료됨</span>`}
+        ${d.state !== '완료' ? `<button class="btn" id="completeBtn">${isOn ? '입사 확정' : '퇴사 확정'}</button>`
+          : `<span class="pill done">완료됨</span>${!isOn ? `<button class="btn" id="uncompleteBtn">확정 취소</button>` : ''}`}
         <div class="spacer"></div>` : '<div class="spacer"></div>'}
       <button class="btn" data-x>취소</button>
       <button class="btn btn-primary" id="saveBtn">${editing ? '저장' : '등록'}</button>
@@ -887,6 +889,15 @@ async function openEntryModal(kind, data) {
         await api('PUT', `${isOn ? '/onboarding' : '/offboarding'}/${d.id}`, collect());
         await api('POST', `${isOn ? '/onboarding' : '/offboarding'}/${d.id}/complete`);
         toast(isOn ? '입사 확정 — 재직자에 반영됨' : '퇴사 확정 — 재직자에 반영됨');
+        closeModal(); render();
+      } catch (e) { toast(e.message, true); }
+    });
+    const ucb = $('#uncompleteBtn', root);
+    if (ucb) ucb.addEventListener('click', async () => {
+      if (!confirm('퇴사 확정을 취소하고 재직자 상태를 되돌릴까요?')) return;
+      try {
+        await api('POST', `/offboarding/${d.id}/uncomplete`);
+        toast('퇴사 확정이 취소되었습니다');
         closeModal(); render();
       } catch (e) { toast(e.message, true); }
     });

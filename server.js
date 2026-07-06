@@ -592,6 +592,24 @@ app.post('/api/offboarding/:id/complete', requireAuth, wrap(async (req, res) => 
   res.json({ ok: true, matched: !!emp });
 }));
 
+// 퇴사 확정 취소 — 재직자 상태를 되돌리고 퇴사자 항목을 다시 진행중으로 전환
+app.post('/api/offboarding/:id/uncomplete', requireAuth, wrap(async (req, res) => {
+  const id = Number(req.params.id);
+  const o = await one('SELECT * FROM offboarding WHERE id = ?', [id]);
+  if (!o) return res.status(404).json({ error: '없음' });
+  if (o.state !== '완료') return res.status(400).json({ error: '완료 상태가 아닙니다.' });
+  if (o.employee_id) {
+    const emp = await one('SELECT * FROM employees WHERE id = ?', [o.employee_id]);
+    // 그 사이 다른 처리로 상태가 바뀌지 않았을 때만 안전하게 복구
+    if (emp && emp.status === '퇴직' && emp.leave_date === o.leave_date) {
+      await run(`UPDATE employees SET status='재직', leave_date='', updated_at=now() WHERE id=?`, [emp.id]);
+    }
+  }
+  await run(`UPDATE offboarding SET state='진행중', updated_at=now() WHERE id=?`, [id]);
+  logAct({ userId: req.user.id, userName: req.user.name, action: '퇴사 확정 취소→재직자 복구', targetType: 'offboarding', targetId: id, detail: o.name });
+  res.json({ ok: true });
+}));
+
 app.delete('/api/offboarding/:id', requireAuth, wrap(async (req, res) => {
   const id = Number(req.params.id);
   const row = await one('SELECT name FROM offboarding WHERE id = ?', [id]);
@@ -698,11 +716,13 @@ app.get('/api/dashboard', requireAuth, wrap(async (req, res) => {
   const today = kstTodayStr(), weekEnd = addDays(today, 7);
   const cnt = async (sql, p = []) => (await one(sql, p)).c;
   // 모든 독립 쿼리를 한 번에 병렬 실행 — 원격 DB 왕복 횟수 최소화
-  const [empActive, empLeave, onbOpen, ofbOpen, open, users, fus, dones, upIn, upOut] = await Promise.all([
+  const monthPrefix = today.slice(0, 7);
+  const [empActive, empLeave, onbOpen, ofbOpen, ofbThisMonth, open, users, fus, dones, upIn, upOut] = await Promise.all([
     cnt(`SELECT COUNT(*)::int c FROM employees WHERE status='재직'`),
     cnt(`SELECT COUNT(*)::int c FROM employees WHERE status='휴직'`),
     cnt(`SELECT COUNT(*)::int c FROM onboarding WHERE state='진행중'`),
     cnt(`SELECT COUNT(*)::int c FROM offboarding WHERE state='진행중'`),
+    cnt(`SELECT COUNT(*)::int c FROM offboarding WHERE leave_date LIKE ?`, [`${monthPrefix}%`]),
     // 진행중 업무 전체를 한 번에 가져와 JS 집계 (pg-mem 호환 + 담당자별/지연/임박/중요도 동시 계산)
     q(`SELECT t.id, t.title, t.target_date, t.priority, t.category, t.subcategory, t.status, t.assignee_id, t.assignee_ids, t.recurring_rule_id,
               u.name AS assignee_name, u.color AS assignee_color
@@ -757,7 +777,7 @@ app.get('/api/dashboard', requireAuth, wrap(async (req, res) => {
     ...upOut.map(o => ({ ...o, kind: 'out' })),
   ].filter(x => x.date).sort((a, b) => a.date.localeCompare(b.date)).slice(0, 8);
 
-  res.json({ empActive, empLeave, onbOpen, ofbOpen, taskOpen, myTaskOpen, taskOverdue, prioStats, taskStats, overdueTasks, dueSoonTasks, taskFeed, upcoming });
+  res.json({ empActive, empLeave, onbOpen, ofbOpen, ofbThisMonth, taskOpen, myTaskOpen, taskOverdue, prioStats, taskStats, overdueTasks, dueSoonTasks, taskFeed, upcoming });
 }));
 
 app.get('/api/activity', requireAuth, wrap(async (req, res) => {
