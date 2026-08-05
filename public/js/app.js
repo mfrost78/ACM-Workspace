@@ -34,15 +34,26 @@ function toast(msg, err = false) {
   setTimeout(() => { t.style.opacity = '0'; t.style.transition = 'opacity .3s'; setTimeout(() => t.remove(), 300); }, 2400);
 }
 
+let modalDirty = false;   // 열린 모달에 저장하지 않은 입력이 있는지 (backdrop/Esc 닫기 시 확인용)
 function openModal(html, cls = '') {
   const root = $('#modal-root');
   root.innerHTML = `<div class="modal-backdrop"><div class="modal ${cls}">${html}</div></div>`;
+  modalDirty = false;
+  const modal = $('.modal', root);
+  modal.addEventListener('input', () => { modalDirty = true; });
+  modal.addEventListener('change', () => { modalDirty = true; });
   const bd = $('.modal-backdrop', root);
-  bd.addEventListener('mousedown', e => { if (e.target === bd) closeModal(); });
+  bd.addEventListener('mousedown', e => { if (e.target === bd) requestCloseModal(); });
   return root;
 }
-function closeModal() { $('#modal-root').innerHTML = ''; }
-document.addEventListener('keydown', e => { if (e.key === 'Escape') closeModal(); });
+function closeModal() { $('#modal-root').innerHTML = ''; modalDirty = false; }
+// 실수로 닫는 경로(배경 클릭·Esc)에서만 미저장 변경 확인 — 저장/취소 버튼은 그대로 닫힘
+function requestCloseModal() {
+  if (!$('#modal-root').innerHTML) return;
+  if (modalDirty && !confirm('저장하지 않은 변경사항이 있습니다. 닫을까요?')) return;
+  closeModal();
+}
+document.addEventListener('keydown', e => { if (e.key === 'Escape') requestCloseModal(); });
 
 // 날짜 입력 연도 자릿수 버그 방지 — min/max에 4자리 연도를 부여하면
 // 브라우저(크로미움)가 연도 칸을 4자리로 제한하고 입력 완료 시 월 칸으로 자동 이동한다.
@@ -155,7 +166,7 @@ function renderForcePwChange() {
     try {
       await api('POST', '/auth/password', { current: f.get('current'), next: f.get('next') });
       state.user.must_change_pw = false;
-      toast('비밀번호가 변경되었습니다'); render();
+      toast('비밀번호가 변경되었습니다'); afterAuth();
     } catch (err) { toast(err.message, true); }
   });
 }
@@ -188,6 +199,7 @@ function renderLogin() {
 const NAV = [
   { id: 'todo', ic: '🗂️', label: '업무 보드', badgeKey: 'myTaskOpen' },
   { id: 'calendar', ic: '📅', label: '캘린더' },
+  { id: 'annual', ic: '📋', label: '연간 계획' },
   { group: '입퇴사', ic: '🔄', items: [
     { id: 'onboarding', ic: '📥', label: '입사자 관리', badgeKey: 'onbOpen' },
     { id: 'offboarding', ic: '📤', label: '퇴사자 관리', badgeKey: 'ofbOpen', dualBadge: ['ofbThisMonth', 'ofbOpen'] },
@@ -303,7 +315,7 @@ async function render() {
 
   const view = $('#view');
   ({ dashboard: viewDashboard, onboarding: viewOnboarding, offboarding: viewOffboarding,
-     calendar: viewCalendar, todo: viewTodo, employees: viewEmployees, activity: viewActivity, users: viewUsers }[state.route] || viewDashboard)(view);
+     calendar: viewCalendar, todo: viewTodo, annual: viewAnnual, employees: viewEmployees, activity: viewActivity, users: viewUsers }[state.route] || viewDashboard)(view);
 
   refreshBadges();
 }
@@ -328,7 +340,20 @@ async function refreshBadges() {
     // 개별 항목(단일 버튼 + 그룹 메뉴 항목) 배지
     document.querySelectorAll('#nav [data-route]').forEach(btn => {
       const def = findNavItem(btn.dataset.route);
-      if (def?.badgeKey) setNavBadge(btn, dash[def.badgeKey]);
+      if (!def) return;
+      if (def.dualBadge) {
+        let badge = btn.querySelector(':scope > .badge-dual');
+        const text = `${dash[def.dualBadge[0]] ?? 0} / ${dash[def.dualBadge[1]] ?? 0}`;
+        if (!badge) {
+          badge = document.createElement('span');
+          badge.className = 'badge badge-dual';
+          badge.title = '이달 퇴사자 / 진행중 퇴사자';
+          btn.appendChild(badge);
+        }
+        badge.textContent = text;
+      } else if (def.badgeKey) {
+        setNavBadge(btn, dash[def.badgeKey]);
+      }
     });
     // 그룹 토글 버튼 — 하위 배지 합산
     document.querySelectorAll('#nav .nav-group').forEach(grp => {
@@ -343,10 +368,20 @@ async function refreshBadges() {
 
 /* ============ 인앱 알림 ============ */
 let notifTimer = null;
+let lastUnread = null;                       // 직전 폴링의 미읽음 수 — 증가분 감지용
+const BASE_TITLE = document.title;
 // 미읽음 개수만 가볍게 폴링해 벨 배지 갱신 (60초 주기)
 async function loadNotifCount() {
   try {
     const d = await api('GET', '/notifications');
+    // 탭 타이틀 배지 — 다른 탭에서 일하다가도 미읽음을 인지
+    document.title = d.unread > 0 ? `(${d.unread > 99 ? '99+' : d.unread}) ${BASE_TITLE}` : BASE_TITLE;
+    // 새 알림 도착 시 토스트 (최초 로드는 제외)
+    if (lastUnread !== null && d.unread > lastUnread) {
+      const latest = (d.items || []).find(n => !n.read);
+      toast(`🔔 ${latest ? latest.title : `새 알림 ${d.unread - lastUnread}건`}`);
+    }
+    lastUnread = d.unread;
     const dot = document.getElementById('notifDot');
     if (!dot) return;
     if (d.unread > 0) { dot.textContent = d.unread > 99 ? '99+' : d.unread; dot.hidden = false; }
@@ -354,7 +389,7 @@ async function loadNotifCount() {
   } catch { /* 무시 */ }
 }
 function startNotifPoll() { loadNotifCount(); if (!notifTimer) notifTimer = setInterval(loadNotifCount, 60_000); }
-function stopNotifPoll() { if (notifTimer) { clearInterval(notifTimer); notifTimer = null; } }
+function stopNotifPoll() { if (notifTimer) { clearInterval(notifTimer); notifTimer = null; } lastUnread = null; document.title = BASE_TITLE; }
 
 function notifOutside(e) {
   const panel = document.getElementById('notifPanel');
@@ -411,6 +446,7 @@ const PURPOSE = {
   dashboard: '오늘의 업무 현황과 금주 일정을 한눈에 봅니다.',
   todo: '프로젝트·업무·세부 To-Do로 팀 업무를 등록하고 진행을 추적합니다.',
   calendar: '입·퇴사, 평가, 업무 목표일을 달력에서 확인합니다.',
+  annual: '정기(반복) 업무의 연간 이행 현황과 예정 일정을 한눈에 봅니다. 예약된 업무는 시기가 되면 업무 보드에 자동 합류합니다.',
   onboarding: '신규 입사자의 처리 항목을 체크리스트로 빠짐없이 관리합니다.',
   offboarding: '퇴사자의 정산·해지 항목을 체크리스트로 빠짐없이 관리합니다.',
   employees: '재직·휴직·퇴직 인원 현황을 조회하고 관리합니다.',
@@ -819,7 +855,7 @@ async function openEntryModal(kind, data) {
       $('#empInfo', root).innerHTML = empInfoBlock(info);
       checkArea.innerHTML = renderChecklist(isOn ? 'on' : 'off', curCategory(), tasks, curJoin(), curLeave());
     });
-    document.addEventListener('click', e => {
+    root.addEventListener('click', e => {
       if (!empSearch.contains(e.target) && !empSuggest.contains(e.target)) { empSuggest.innerHTML = ''; empSuggest.classList.remove('open'); }
     });
   }
@@ -835,7 +871,7 @@ async function openEntryModal(kind, data) {
       if (el.dataset.task === 'daesang') {
         checkArea.innerHTML = renderChecklist(isOn ? 'on' : 'off', curCategory(), tasks, curJoin(), curLeave());
       }
-    } else if (el.type === 'number') {
+    } else if (el.type === 'text' && el.dataset.task) {
       const lbl = el.parentElement.querySelector('.ci-label .pill');
       if (lbl) {
         const done = el.value !== '';
@@ -889,7 +925,7 @@ async function openEntryModal(kind, data) {
         await api('PUT', `${isOn ? '/onboarding' : '/offboarding'}/${d.id}`, collect());
         await api('POST', `${isOn ? '/onboarding' : '/offboarding'}/${d.id}/complete`);
         toast(isOn ? '입사 확정 — 재직자에 반영됨' : '퇴사 확정 — 재직자에 반영됨');
-        closeModal(); render();
+        closeModal(); await getDash(true); render();
       } catch (e) { toast(e.message, true); }
     });
     const ucb = $('#uncompleteBtn', root);
@@ -898,7 +934,7 @@ async function openEntryModal(kind, data) {
       try {
         await api('POST', `/offboarding/${d.id}/uncomplete`);
         toast('퇴사 확정이 취소되었습니다');
-        closeModal(); render();
+        closeModal(); await getDash(true); render();
       } catch (e) { toast(e.message, true); }
     });
   }
@@ -912,7 +948,7 @@ async function openOffboarding(id) { const d = await api('GET', `/offboarding/${
 // 입사자/퇴사자 목록 → CSV 행렬(보이는 항목 + 체크리스트 값 전체)
 function listToAoa(kind, rows, defs) {
   const isOn = kind === 'on';
-  const head = ['사번', '성명', '구분', '직급', '분야', '소속', isOn ? '입사일' : '입사일'];
+  const head = ['사번', '성명', '구분', '직급', '분야', '소속', '입사일'];
   if (!isOn) head.push('퇴사예정일', '사직원접수', '재입사예정');
   if (isOn) head.push('재입사');
   head.push('상태', '진행률(%)', '메모', ...defs.map(t => t.label));
@@ -922,13 +958,18 @@ function listToAoa(kind, rows, defs) {
     const eff = isOn ? tasks : effectiveTasks(defs, 'off', r.category, tasks, r.join_date, r.leave_date);
     const pr = progress(defs, r.category, eff);
     const active = activeTasks(defs, r.category);
+    const evalNA = tasks.daesang === '미대상';
     const row = [r.emp_no || '', r.name || '', r.category || '', r.position || '', r.field || '', r.org || '', r.join_date || ''];
     if (!isOn) row.push(r.leave_date || '', r.resign_date || '', r.rehire_planned ? '예' : '');
     if (isOn) row.push(r.rehire ? '예' : '');
     row.push(r.state || '', pr, r.memo || '');
     for (const t of defs) {
       if (!active.includes(t)) { row.push(''); continue; }
-      if (t.type === 'autodate') { row.push(computeDate(t.calc, r.join_date) || ''); continue; }
+      if (t.type === 'autodate') {
+        const hideEval = evalNA && (t.key === 'pyeongga_yejeong' || t.key === 'pyeongga_gyobu');
+        row.push(hideEval ? '' : (computeDate(t.calc, r.join_date) || ''));
+        continue;
+      }
       if (!isOn && t.key === 'toejikgeum' && under1Year(r.join_date, r.leave_date)) { row.push('대상아님'); continue; }
       row.push(tasks[t.key] ?? '');
     }
@@ -951,7 +992,7 @@ async function listView(view, kind) {
   wireTopbar(view);
   $('#addBtn', view).addEventListener('click', () => openEntryModal(kind));
 
-  const filter = { state: '진행중', q: '', category: '', month: '', tasks: [] };
+  const filter = { state: '진행중', q: '', category: '', month: '', tasks: [], hideDone: false };
   const selected = new Set();
   let allRows = [];   // 서버에서 받은 전체(상태 무관)
   const wrap = document.createElement('div');
@@ -979,6 +1020,7 @@ async function listView(view, kind) {
       </select>
       <select class="select" id="fTaskVal" style="width:auto" disabled><option value="">값 선택</option></select>
       <button class="btn btn-sm" id="addFilter" disabled>필터 추가</button>
+      <label class="chk-inline" title="처리할 것이 남은 항목 열만 표시"><input type="checkbox" id="fHideDone"> 미완료 항목만</label>
       <div class="chips" id="chipArea"></div>
     </div>
     <div id="listResult"></div>`;
@@ -1030,8 +1072,35 @@ async function listView(view, kind) {
     bulkDel.disabled = !selected.size;
     bulkDel.textContent = `선택 삭제${selected.size ? ` (${selected.size})` : ''}`;
 
-    const colCount = 1 + (2 + (isOn ? 0 : 2)) + 1 + defs.length + 3;   // +메모, +입사일(퇴사)
+    // 진행률 100%인데 아직 확정(완료) 전인 행 수 — 확정 누락 방지 안내
+    const rowPr = (r) => {
+      const tasks = parseTasks(r.tasks);
+      const eff = isOn ? tasks : effectiveTasks(defs, 'off', r.category, tasks, r.join_date, r.leave_date);
+      return progress(defs, r.category, eff);
+    };
+    const waitCount = filtered.filter(r => r.state !== '완료' && rowPr(r) === 100).length;
+
+    // '미완료 항목만' 토글: 표시 중인 행에서 처리할 것이 남아 있는 컬럼만 노출
+    let visDefs = defs;
+    if (filter.hideDone) {
+      visDefs = defs.filter(t => {
+        if (t.type === 'autodate') return false;
+        return filtered.some(r => {
+          if (!activeTasks(defs, r.category).includes(t)) return false;
+          const tasks = parseTasks(r.tasks);
+          const eff = isOn ? tasks : effectiveTasks(defs, 'off', r.category, tasks, r.join_date, r.leave_date);
+          const v = eff[t.key];
+          if (t.type === 'amount') return v === undefined || v === null || String(v) === '';
+          if (t.type === 'date') return !v;
+          const cur = v || (OPTS[t.opts] || [])[0] || '';
+          return String(cur).startsWith('미') && cur !== '미대상';
+        });
+      });
+    }
+
+    const colCount = 1 + (2 + (isOn ? 0 : 2)) + 1 + visDefs.length + 3;   // +메모, +입사일(퇴사)
     resultEl.innerHTML = `
+      ${waitCount ? `<div class="view-hint">⏳ 체크리스트 완료 — <b>${isOn ? '입사' : '퇴사'} 확정 대기 ${waitCount}건</b>. 이름을 눌러 상세에서 확정하세요.</div>` : ''}
       <div class="card"><div class="card-body"><div class="table-wrap">
         <table class="tbl xls-tbl"><thead><tr>
           <th class="sticky-col sel-col"><input type="checkbox" id="selAll" ${filtered.length && filtered.every(r => selected.has(r.id)) ? 'checked' : ''}></th>
@@ -1040,7 +1109,7 @@ async function listView(view, kind) {
           <th>구분</th>${!isOn ? '<th>입사일</th>' : ''}<th>${isOn ? '입사일' : '퇴사예정일'}</th>
           ${isOn ? '' : '<th>사직원접수</th>'}
           <th>메모</th>
-          ${defs.map(t => `<th title="${esc(TASK_DESC[t.key] || t.label)}">${esc(t.label)}${TASK_DESC[t.key] ? ' ⓘ' : ''}</th>`).join('')}
+          ${visDefs.map(t => `<th title="${esc(TASK_DESC[t.key] || t.label)}">${esc(t.label)}${TASK_DESC[t.key] ? ' ⓘ' : ''}</th>`).join('')}
         </tr></thead><tbody>
         ${filtered.length ? filtered.map(r => {
           const tasks = parseTasks(r.tasks);
@@ -1048,17 +1117,18 @@ async function listView(view, kind) {
           const pr = progress(defs, r.category, eff);
           const active = activeTasks(defs, r.category);
           const evalNA = tasks.daesang === '미대상';
+          const waiting = r.state !== '완료' && pr === 100;
           return `<tr data-id="${r.id}">
             <td class="sticky-col sel-col"><input type="checkbox" class="rowSel" data-id="${r.id}" ${selected.has(r.id) ? 'checked' : ''}></td>
             <td class="t-strong sticky-col name-col"><span class="name-link" data-id="${r.id}">${esc(r.name)}</span> ${r.emp_no ? `<span class="t-muted">${esc(r.emp_no)}</span>` : ''}${isOn && r.rehire ? ' <span class="pill blue" style="font-size:10px">재입사</span>' : ''}${!isOn && r.rehire_planned ? ' <span class="pill blue" style="font-size:10px">재입사예정</span>' : ''}</td>
             <td>${progBar(pr)}</td>
-            <td><span class="pill ${r.state === '완료' ? 'done' : 'blue'}">${esc(r.state)}</span></td>
+            <td><span class="pill ${r.state === '완료' ? 'done' : waiting ? 'todo' : 'blue'}" ${waiting ? 'title="체크리스트 100% — 확정 필요"' : ''}>${waiting ? '확정 대기' : esc(r.state)}</span></td>
             <td><span class="pill gray">${esc(r.category)}</span></td>
             ${!isOn ? `<td>${esc(r.join_date) || '—'}</td>` : ''}
             <td>${esc(isOn ? r.join_date : r.leave_date) || '—'}</td>
             ${isOn ? '' : `<td>${esc(r.resign_date) || '—'}</td>`}
             <td><input type="text" class="cell-input memo-input" placeholder="메모" data-id="${r.id}" data-memo="1" value="${esc(r.memo || '')}"></td>
-            ${defs.map(t => {
+            ${visDefs.map(t => {
               if (!active.includes(t)) return `<td class="cell-na">—</td>`;
               if (t.type === 'autodate') {
                 const hideEval = evalNA && (t.key === 'pyeongga_yejeong' || t.key === 'pyeongga_gyobu');
@@ -1142,21 +1212,26 @@ async function listView(view, kind) {
     filter.tasks.push({ key: fTaskKey.value, value: fTaskVal.value });
     renderChips(); renderTable();
   });
+  $('#fHideDone', wrap).addEventListener('change', e => { filter.hideDone = e.target.checked; renderTable(); });
 
   // 인라인 변경(체크리스트 / 메모)은 결과 영역에 위임(테이블 재렌더와 무관하게 유지)
   resultEl.addEventListener('change', async e => {
     const base = `/${isOn ? 'onboarding' : 'offboarding'}`;
     const taskEl = e.target.closest('[data-task]');
     if (taskEl) {
-      await api('PUT', `${base}/${Number(taskEl.dataset.id)}`, { tasks: { [taskEl.dataset.task]: taskEl.value } });
-      await reload();
+      try {
+        await api('PUT', `${base}/${Number(taskEl.dataset.id)}`, { tasks: { [taskEl.dataset.task]: taskEl.value } });
+        await reload();
+      } catch (e) { toast(e.message, true); }
       return;
     }
     const memoEl = e.target.closest('[data-memo]');
     if (memoEl) {
       const id = Number(memoEl.dataset.id);
-      await api('PUT', `${base}/${id}`, { memo: memoEl.value });
-      const row = allRows.find(r => r.id === id); if (row) row.memo = memoEl.value;   // 재렌더 없이 캐시만 갱신(포커스 유지)
+      try {
+        await api('PUT', `${base}/${id}`, { memo: memoEl.value });
+        const row = allRows.find(r => r.id === id); if (row) row.memo = memoEl.value;   // 재렌더 없이 캐시만 갱신(포커스 유지)
+      } catch (e) { toast(e.message, true); }
     }
   });
 
@@ -1292,7 +1367,13 @@ async function getUsers(force) { if (force || !_usersCache) _usersCache = await 
 // 모달/렌더에서 공유하는 캐시
 let todoProjects = [], todoUsers = [];
 
-const TODO = { view: 'list', status: '진행중', category: '', assignee: '', mine: false, overdue: false, groupBy: 'status' };
+const TODO = { view: 'list', status: '진행중', category: '', assignee: '', mine: false, overdue: false, groupBy: 'status', q: '' };
+
+// 리스트 뷰에서 접어둔 프로젝트 id (localStorage에 유지)
+const PROJ_FOLD_KEY = 'hrws_proj_fold';
+let projFold;
+try { projFold = new Set(JSON.parse(localStorage.getItem(PROJ_FOLD_KEY) || '[]')); } catch { projFold = new Set(); }
+function saveProjFold() { try { localStorage.setItem(PROJ_FOLD_KEY, JSON.stringify([...projFold])); } catch { /* 무시 */ } }
 
 // task의 담당자 id 목록 (복수). assignee_ids 우선, 레거시 단일 폴백
 function taskAsgIds(t) {
@@ -1373,6 +1454,11 @@ function inlineStatusSel(t) {
   return `<select class="cell-select inline-st tone-${TODO_STATUS_TONE[t.status] || 'na'}" data-stid="${t.id}">
     ${TODO_STATUS.map(s => `<option ${t.status === s ? 'selected' : ''}>${esc(s)}</option>`).join('')}</select>`;
 }
+// 프로젝트용 인라인 상태 변경 select (리스트 뷰 헤더)
+function projStatusSel(p) {
+  return `<select class="cell-select inline-pst tone-${TODO_STATUS_TONE[p.status] || 'na'}" data-pstid="${p.id}" title="프로젝트 상태 변경">
+    ${TODO_STATUS.map(s => `<option ${p.status === s ? 'selected' : ''}>${esc(s)}</option>`).join('')}</select>`;
+}
 
 function userOpts(selId) {
   return `<option value="">미지정</option>` + todoUsers.map(u =>
@@ -1398,9 +1484,18 @@ function assigneePicker(selIds) {
 
 async function viewTodo(view) {
   view.innerHTML = topbar('업무 보드',
-    `<button class="btn" id="recurBtn">🔁 반복 업무</button><button class="btn" id="addProj">＋ 프로젝트</button><button class="btn btn-primary" id="addTask">＋ 업무</button>`);
+    `<div class="search"><input class="input" id="tSearch" placeholder="업무·프로젝트 검색" value="${esc(TODO.q)}"></div>
+     <button class="btn" id="presetBtn">📦 세트</button><button class="btn" id="recurBtn">🔁 반복 업무</button><button class="btn" id="addProj">＋ 프로젝트</button><button class="btn btn-primary" id="addTask">＋ 업무</button>`);
   wireTopbar(view);
   const wrap = document.createElement('div'); view.appendChild(wrap);
+
+  // 검색 입력은 topbar(1회 렌더)에 있어 draw() 재렌더에도 포커스·IME 유지
+  const tSearch = $('#tSearch', view);
+  let tDeb;
+  tSearch.addEventListener('input', () => {
+    clearTimeout(tDeb);
+    tDeb = setTimeout(() => { TODO.q = tSearch.value.trim(); draw(); }, 200);
+  });
 
   const inArchive = () => TODO.status === 'archive';
   let projects = [], tasks = [];
@@ -1413,19 +1508,24 @@ async function viewTodo(view) {
     if (!inArchive()) todoProjects = projects;
   }
 
-  const taskOk = (t) =>
-    (TODO.status === 'all' || inArchive() || t.status === TODO.status) &&
+  // 상태를 제외한 공통 필터(구분·담당·검색 등) — 진행중 프로젝트의 하위 업무 전체 표시에 사용
+  const taskFilters = (t) =>
     (!TODO.category || t.category === TODO.category) &&
     (!TODO.assignee || taskAsgIds(t).includes(Number(TODO.assignee))) &&
     (!TODO.mine || taskAsgIds(t).includes(state.user.id)) &&
-    (!TODO.overdue || isOverdueTask(t));
+    (!TODO.overdue || isOverdueTask(t)) &&
+    (!TODO.q || (t.title || '').includes(TODO.q) || (t.content || '').includes(TODO.q));
+  const taskOk = (t) =>
+    (TODO.status === 'all' || inArchive() || t.status === TODO.status) && taskFilters(t);
   const projOk = (p) =>
     (TODO.status === 'all' || inArchive() || p.status === TODO.status) &&
     (!TODO.category || p.category === TODO.category) &&
     (!TODO.assignee || String(p.assignee_id) === TODO.assignee) &&
     (!TODO.mine || p.assignee_id === state.user.id) &&
-    (!TODO.overdue || isOverdueTask(p));
+    (!TODO.overdue || isOverdueTask(p)) &&
+    (!TODO.q || (p.title || '').includes(TODO.q));
 
+  $('#presetBtn', view).addEventListener('click', () => openPresetModal(refresh));
   $('#recurBtn', view).addEventListener('click', () => openRecurringModal(refresh));
   $('#addProj', view).addEventListener('click', () => openProjectModal(null, refresh));
   $('#addTask', view).addEventListener('click', () => openTaskModal(null, { onSaved: refresh }));
@@ -1435,7 +1535,9 @@ async function viewTodo(view) {
     return `
       ${inArchive() ? '' : `<div class="quick-add">
         <span class="qa-ic">⚡</span>
-        <input class="input" id="qaTitle" placeholder="빠른 추가 — 제목 입력 후 Enter (구분·중요도는 나중에 수정 가능)">
+        <input class="input" id="qaTitle" placeholder="빠른 추가 — 제목 입력 후 Enter">
+        <select class="select" id="qaProj" style="width:auto;max-width:160px" title="프로젝트">${projectOpts('')}</select>
+        <select class="select" id="qaSub" style="width:auto" title="구분">${subcatOpts('')}</select>
         <select class="select" id="qaAsg" style="width:auto">${userOpts(state.user.id)}</select>
         <input class="input" id="qaDate" type="date" style="width:auto" title="목표일">
         <button class="btn btn-sm btn-primary" id="qaBtn">추가</button>
@@ -1466,7 +1568,7 @@ async function viewTodo(view) {
   function draw() {
     const vTasks = tasks.filter(taskOk);
     let bodyHtml = '';
-    if (TODO.view === 'list') bodyHtml = renderList(projects, tasks, projOk, taskOk, inArchive());
+    if (TODO.view === 'list') bodyHtml = renderList(projects, tasks, projOk, taskOk, taskFilters, inArchive());
     else if (TODO.view === 'kanban') bodyHtml = renderKanban(vTasks);
     else if (TODO.view === 'timeline') bodyHtml = renderTimeline(projects, tasks, projOk, taskOk);
     else bodyHtml = renderRel(projects, tasks, projOk, taskOk);
@@ -1493,8 +1595,10 @@ async function viewTodo(view) {
         const title = qa.value.trim(); if (!title) return;
         try {
           const qaA = $('#qaAsg', wrap).value;
+          const qaP = $('#qaProj', wrap).value;
           await api('POST', '/tasks', {
-            title, subcategory: '기타', priority: '보통',
+            title, subcategory: $('#qaSub', wrap).value || '기타', priority: '보통',
+            project_id: qaP ? Number(qaP) : null,
             assignee_ids: qaA ? [Number(qaA)] : [],
             start_date: todayStr(), target_date: $('#qaDate', wrap).value || '',
           });
@@ -1507,12 +1611,34 @@ async function viewTodo(view) {
 
     // 공통: 프로젝트/업무 클릭 → 모달
     wrap.querySelectorAll('[data-proj]').forEach(el => el.addEventListener('click', ev => {
-      if (ev.target.closest('[data-task],[data-arch],[data-addtask]')) return; // 내부 컨트롤 클릭은 제외
+      if (ev.target.closest('[data-task],[data-arch],[data-addtask],[data-fold]')) return; // 내부 컨트롤 클릭은 제외
       openProjectModal(Number(el.dataset.proj), refresh);
     }));
+    // 프로젝트 접기/펼치기 (localStorage에 유지)
+    wrap.querySelectorAll('[data-fold]').forEach(b => b.addEventListener('click', ev => {
+      ev.stopPropagation();
+      const pid = Number(b.dataset.fold);
+      if (projFold.has(pid)) projFold.delete(pid); else projFold.add(pid);
+      saveProjFold(); draw();
+    }));
     wrap.querySelectorAll('[data-task]').forEach(el => el.addEventListener('click', ev => {
-      if (ev.target.closest('.inline-st,[data-arch],.todo-toggle,.link-btn')) return;
+      if (ev.target.closest('.inline-st,[data-arch],.todo-toggle,.link-btn,.task-done-chk')) return;
       ev.stopPropagation(); openTaskModal(Number(el.dataset.task), { onSaved: refresh });
+    }));
+    // 행 앞 체크박스 — 완료 ↔ 진행중 즉시 토글 (완료일은 서버가 자동 처리)
+    wrap.querySelectorAll('.task-done-chk').forEach(cb => {
+      cb.addEventListener('click', ev => ev.stopPropagation());
+      cb.addEventListener('change', async () => {
+        try { await api('PUT', `/tasks/${cb.dataset.donechk}`, { status: cb.checked ? '완료' : '진행중' }); await refresh(); }
+        catch (e) { toast(e.message, true); cb.checked = !cb.checked; }
+      });
+    });
+    // 완료·취소 하위 업무 더 보기 / 접기
+    wrap.querySelectorAll('[data-donemore]').forEach(b => b.addEventListener('click', ev => {
+      ev.stopPropagation(); doneExpand.add(Number(b.dataset.donemore)); draw();
+    }));
+    wrap.querySelectorAll('[data-donefold]').forEach(b => b.addEventListener('click', ev => {
+      ev.stopPropagation(); doneExpand.delete(Number(b.dataset.donefold)); draw();
     }));
     wrap.querySelectorAll('[data-addtask]').forEach(el => el.addEventListener('click', ev => { ev.stopPropagation(); openTaskModal(null, { project_id: el.dataset.addtask, onSaved: refresh }); }));
 
@@ -1521,6 +1647,19 @@ async function viewTodo(view) {
       sel.addEventListener('click', ev => ev.stopPropagation());
       sel.addEventListener('change', async () => {
         try { await api('PUT', `/tasks/${sel.dataset.stid}`, { status: sel.value }); await refresh(); }
+        catch (e) { toast(e.message, true); }
+      });
+    });
+    // 프로젝트 인라인 상태 변경 — 진행중 하위 업무가 남아 있으면 완료 전 확인
+    wrap.querySelectorAll('.inline-pst').forEach(sel => {
+      sel.addEventListener('click', ev => ev.stopPropagation());
+      sel.addEventListener('change', async () => {
+        const pid = Number(sel.dataset.pstid);
+        if (sel.value === '완료') {
+          const open = tasks.filter(t => Number(t.project_id) === pid && t.status === '진행중').length;
+          if (open && !confirm(`진행중 하위 업무가 ${open}건 있습니다. 프로젝트를 완료 처리할까요?\n(하위 업무 상태는 변경되지 않습니다)`)) { draw(); return; }
+        }
+        try { await api('PUT', `/projects/${pid}`, { status: sel.value }); toast(`프로젝트가 '${sel.value}' 상태로 변경되었습니다`); await refresh(); }
         catch (e) { toast(e.message, true); }
       });
     });
@@ -1592,7 +1731,7 @@ async function viewTodo(view) {
       inp.addEventListener('blur', () => setTimeout(() => collapseIfEmpty(inp), 150));
     });
 
-    if (TODO.view === 'kanban') wireKanbanDnD(wrap, refresh);
+    if (TODO.view === 'kanban') wireKanbanDnD(wrap, refresh, vTasks);
     // 타임라인: 오늘 위치가 보이도록 초기 가로 스크롤
     if (TODO.view === 'timeline') {
       const sc = wrap.querySelector('.tl-scroll'), tdy = wrap.querySelector('.tl-today');
@@ -1638,18 +1777,28 @@ function byPrioThenDate(a, b) {
   const da = a.target_date || '9999-99-99', db = b.target_date || '9999-99-99';
   return da.localeCompare(db);
 }
-function renderList(projects, tasks, projOk, taskOk, arch = false) {
+// 상태(진행중 우선) → 중요도 → 목표일 정렬: 남은 일이 항상 위, 완료·취소는 아래
+const STATUS_RANK = { '진행중': 0, '완료': 1, '취소': 2 };
+function byStatusThenPrio(a, b) {
+  const sa = STATUS_RANK[a.status] ?? 9, sb = STATUS_RANK[b.status] ?? 9;
+  if (sa !== sb) return sa - sb;
+  return byPrioThenDate(a, b);
+}
+function renderList(projects, tasks, projOk, taskOk, taskFilters, arch = false) {
   const byProj = {}; for (const t of tasks) (byProj[t.project_id ?? 0] ||= []).push(t);
   const sortedProjects = [...projects].sort(byPrioThenDate);
   const blocks = [];
+  // '진행중' 보기: 진행중 프로젝트의 하위 업무는 완료·취소 포함 전체 표시 (완료 여부 조망)
+  const showAllSub = TODO.status === '진행중' && !arch;
   for (const p of sortedProjects) {
-    const vt = (byProj[p.id] || []).filter(taskOk).sort(byPrioThenDate);
+    const useAll = showAllSub && p.status === '진행중';
+    const vt = (byProj[p.id] || []).filter(useAll ? taskFilters : taskOk).sort(byStatusThenPrio);
     if (!projOk(p) && !vt.length) continue;
     const done = (byProj[p.id] || []).filter(t => t.status === '완료').length;
     blocks.push(projBlock(p, vt, done, (byProj[p.id] || []).length, arch));
   }
-  // 프로젝트 미연결 업무
-  const orphans = (byProj[0] || []).filter(taskOk).sort(byPrioThenDate);
+  // 프로젝트 미연결 업무 (상태 필터 그대로 적용 — 완료 독립 업무 누적 방지)
+  const orphans = (byProj[0] || []).filter(taskOk).sort(byStatusThenPrio);
   if (orphans.length) blocks.push(`
     <div class="proj-block orphan">
       <div class="proj-head"><div class="proj-title">◇ (프로젝트 미연결 업무)</div></div>
@@ -1657,27 +1806,47 @@ function renderList(projects, tasks, projOk, taskOk, arch = false) {
     </div>`);
   return `<div class="todo-list">${blocks.join('') || `<div class="empty"><div class="big">${arch ? '📦' : '🗂️'}</div>${arch ? '보관된 업무가 없습니다.' : '표시할 업무가 없습니다.<br><span class="t-muted" style="font-size:12.5px">상단 <b>＋업무</b> 또는 빠른 추가(⚡)로 등록하거나, 필터를 확인하세요.</span>'}</div>`}</div>`;
 }
+const DONE_FOLD = 5;              // 완료·취소 하위 업무 기본 표시 건수 (초과분은 접기)
+const doneExpand = new Set();     // '더 보기'로 펼친 프로젝트 id (세션 한정)
 function projBlock(p, vt, done, total, arch = false) {
+  // 검색 중에는 결과 확인을 위해 접힘을 무시하고 항상 펼침
+  const folded = !arch && !TODO.q && projFold.has(Number(p.id));
+  // 완료·취소 행이 많으면 접기 — 남은 일 위주로 화면 유지
+  const openRows = vt.filter(t => t.status === '진행중');
+  const closedRows = vt.filter(t => t.status !== '진행중');
+  const expanded = doneExpand.has(Number(p.id));
+  const shownClosed = expanded ? closedRows : closedRows.slice(0, DONE_FOLD);
+  const hiddenCnt = closedRows.length - shownClosed.length;
+  const rowsHtml = [...openRows, ...shownClosed].map(t => taskRow(t, arch)).join('')
+    + (hiddenCnt > 0 ? `<div class="task-empty"><button class="btn btn-sm btn-ghost" data-donemore="${p.id}">☑ 완료·취소 ${hiddenCnt}건 더 보기</button></div>` : '')
+    + (expanded && closedRows.length > DONE_FOLD ? `<div class="task-empty"><button class="btn btn-sm btn-ghost" data-donefold="${p.id}">완료 항목 접기</button></div>` : '');
   return `
     <div class="proj-block">
       <div class="proj-head" data-proj="${p.id}">
+        ${arch ? '' : `<button class="btn btn-sm btn-ghost" data-fold="${p.id}" title="${folded ? '펼치기' : '접기'}">${folded ? '▸' : '▾'}</button>`}
         <div class="proj-title">◆ ${esc(p.title)}</div>
-        ${catBadge(p.category)} ${prioBadge(p.priority)} ${statusPill(p.status)} ${ddayBadge(p)}
+        ${catBadge(p.category)} ${prioBadge(p.priority)} ${arch ? statusPill(p.status) : projStatusSel(p)} ${ddayBadge(p)}
         <span class="t-muted">${p.assignee_name ? esc(p.assignee_name) : '담당 미지정'} · ${esc(schedText(p))}</span>
+        <span style="width:150px;display:inline-flex;flex-shrink:0;margin-right:4px">${total ? progBar(Math.round(done / total * 100)) : ''}</span>
         <span class="proj-prog t-muted">하위 ${done}/${total}</span>
         <div class="spacer"></div>
         ${archBtn('projects', p, arch)}
         ${arch ? '' : `<button class="btn btn-sm" data-addtask="${p.id}">＋ 업무</button>`}
       </div>
-      ${vt.length ? `<div class="task-rows">${vt.map(t => taskRow(t, arch)).join('')}</div>` : `<div class="task-empty t-muted">하위 업무 없음</div>`}
+      ${folded ? '' : (vt.length ? `<div class="task-rows">${rowsHtml}</div>` : `<div class="task-empty t-muted">하위 업무 없음</div>`)}
     </div>`;
 }
 // 리스트 1줄 — 모든 메타를 한 줄에 고정 높이로(말줄임). 좌→우: 제목 / 구분 / 중요도 / 상태 / D-day / F/U / 담당자 / 기간
 function taskRow(t, arch = false) {
   const todos = Array.isArray(t.todos) ? t.todos : [];
   const badge = todos.length ? `<span class="todo-badge">${todos.filter(x => x.done).length}/${todos.length}</span>` : '';
+  const stateCls = t.status === '완료' ? 'is-done' : t.status === '취소' ? 'is-cancel' : '';
+  const lead = arch ? ''
+    : t.status === '취소' ? `<span class="task-cancel-mark" title="취소된 업무">✖</span>`
+    : `<input type="checkbox" class="task-done-chk" data-donechk="${t.id}" ${t.status === '완료' ? 'checked' : ''} title="${t.status === '완료' ? '진행중으로 되돌리기' : '완료 처리'}">`;
   return `
-    <div class="task-row" data-task="${t.id}">
+    <div class="task-row ${stateCls}" data-task="${t.id}">
+      ${lead}
       <span class="task-name">${recurMark(t)}${esc(t.title)}</span>
       <span class="pill sub">${esc(t.subcategory || t.category)}</span>
       ${prioBadge(t.priority)} ${arch ? statusPill(t.status) : inlineStatusSel(t)} ${ddayBadge(t)}
@@ -1723,7 +1892,7 @@ function kbCard(t) {
       </div>
     </div>`;
 }
-function wireKanbanDnD(root, onChange) {
+function wireKanbanDnD(root, onChange, vTasks) {
   root.querySelectorAll('.kb-card').forEach(card => {
     card.addEventListener('dragstart', e => { e.dataTransfer.setData('text/plain', card.dataset.id); card.classList.add('dragging'); });
     card.addEventListener('dragend', () => card.classList.remove('dragging'));
@@ -1735,7 +1904,17 @@ function wireKanbanDnD(root, onChange) {
       e.preventDefault(); col.classList.remove('drop-hover');
       const id = Number(e.dataTransfer.getData('text/plain')); if (!id) return;
       const val = col.dataset.col;
-      const body = TODO.groupBy === 'status' ? { status: val } : { assignee_id: val || null };
+      let body;
+      if (TODO.groupBy === 'status') {
+        body = { status: val };
+      } else {
+        // 담당자별 칸반: 기존 복수 담당자를 유지한 채 드롭한 담당자를 추가(미지정 칼럼이면 전원 해제)
+        const t = vTasks.find(x => Number(x.id) === id);
+        const cur = t ? taskAsgIds(t) : [];
+        const uid = val ? Number(val) : null;
+        const ids = uid == null ? [] : (cur.includes(uid) ? cur : [...cur, uid]);
+        body = { assignee_ids: ids };
+      }
       try { await api('PUT', `/tasks/${id}`, body); await onChange(); } catch (err) { toast(err.message, true); }
     });
   });
@@ -1881,7 +2060,15 @@ function renderTimeline(projects, tasks, projOk, taskOk) {
 async function openProjectModal(id, onSaved) {
   await getUsers(); todoUsers = _usersCache;
   const editing = !!id;
-  const d = editing ? (todoProjects.find(p => Number(p.id) === Number(id)) || await api('GET', '/projects').then(ps => ps.find(p => Number(p.id) === Number(id)))) : { status: '진행중', priority: '보통', category: '인사' };
+  let d;
+  if (editing) {
+    d = todoProjects.find(p => Number(p.id) === Number(id))
+      || await api('GET', '/projects').then(ps => ps.find(p => Number(p.id) === Number(id)))
+      || await api('GET', '/projects?archived=1').then(ps => ps.find(p => Number(p.id) === Number(id)));
+    if (!d) return toast('프로젝트를 찾을 수 없습니다', true);
+  } else {
+    d = { status: '진행중', priority: '보통', category: '인사' };
+  }
   openModal(`
     <div class="modal-head"><h3>프로젝트 ${editing ? '정보' : '등록'}</h3><button class="x" data-x>×</button></div>
     <div class="modal-body"><form id="projForm" class="form-grid">
@@ -1894,9 +2081,15 @@ async function openProjectModal(id, onSaved) {
       <div class="field"><label>시작일</label><input class="input" name="start_date" type="date" value="${esc(d.start_date || '')}"></div>
       <div class="field"><label>목표일</label><input class="input" name="target_date" type="date" value="${esc(d.target_date || '')}"></div>
       <div class="field"><label>완료일</label><input class="input" name="done_date" type="date" value="${esc(d.done_date || '')}"></div>
-    </form></div>
+    </form>
+    ${editing ? `<div class="fu-section"><div class="section-title">하위 업무</div>
+      <div id="projTasks" class="fu-list"><div class="t-muted">불러오는 중…</div></div>
+      <div class="link-add" style="margin-top:8px"><button class="btn btn-sm" id="projAddTask" type="button">＋ 업무 추가</button></div>
+    </div>` : ''}</div>
     <div class="modal-foot">
-      ${editing ? `<button class="btn btn-danger" id="delProj">삭제</button>` : ''}<div class="spacer"></div>
+      ${editing ? `<button class="btn btn-danger" id="delProj">삭제</button>
+      <button class="btn" id="savePreset" title="이 프로젝트의 하위 업무·To-Do 구조를 세트로 저장">📦 세트로 저장</button>
+      ${d.status !== '완료' ? `<button class="btn" id="completeProj">✔ 완료 처리</button>` : `<button class="btn" id="reopenProj">↩ 진행중으로</button>`}` : ''}<div class="spacer"></div>
       <button class="btn" data-x>취소</button><button class="btn btn-primary" id="saveProj">${editing ? '저장' : '등록'}</button>
     </div>`);
   const root = $('#modal-root');
@@ -1913,6 +2106,52 @@ async function openProjectModal(id, onSaved) {
     if (!confirm(`'${d.title}' 프로젝트를 삭제할까요?\n연결된 하위 업무와 진행상황도 함께 삭제됩니다.`)) return;
     try { await api('DELETE', `/projects/${id}`); toast('삭제되었습니다'); closeModal(); onSaved && onSaved(); } catch (e) { toast(e.message, true); }
   });
+  // 완료 처리 / 진행중 되돌리기 — 서버가 완료 전환 시 완료일을 자동 입력
+  if (editing) $('#completeProj', root)?.addEventListener('click', async () => {
+    try {
+      const ts = await api('GET', `/tasks?project_id=${id}`);
+      const open = ts.filter(t => t.status === '진행중').length;
+      const msg = open
+        ? `진행중 하위 업무가 ${open}건 있습니다. 프로젝트를 완료 처리할까요?\n(하위 업무 상태는 변경되지 않습니다)`
+        : '프로젝트를 완료 처리할까요?';
+      if (!confirm(msg)) return;
+      await api('PUT', `/projects/${id}`, { status: '완료' });
+      toast('프로젝트가 완료 처리되었습니다'); closeModal(); onSaved && onSaved();
+    } catch (e) { toast(e.message, true); }
+  });
+  if (editing) $('#reopenProj', root)?.addEventListener('click', async () => {
+    try {
+      await api('PUT', `/projects/${id}`, { status: '진행중', done_date: '' });
+      toast('프로젝트가 진행중으로 전환되었습니다'); closeModal(); onSaved && onSaved();
+    } catch (e) { toast(e.message, true); }
+  });
+  if (editing) $('#savePreset', root)?.addEventListener('click', async () => {
+    const name = prompt('세트 이름 (하위 업무·To-Do 구조가 템플릿으로 저장됩니다)', d.title);
+    if (!name || !name.trim()) return;
+    try { await api('POST', `/projects/${id}/save-preset`, { name: name.trim() }); toast(`'${name.trim()}' 세트로 저장되었습니다 — 📦 세트에서 불러올 수 있습니다`); }
+    catch (e) { toast(e.message, true); }
+  });
+
+  // 하위 업무 목록 — 행 클릭 시 업무 모달로 전환, ＋로 이 프로젝트에 바로 추가
+  if (editing) {
+    $('#projAddTask', root)?.addEventListener('click', () => { closeModal(); openTaskModal(null, { project_id: id, onSaved }); });
+    (async () => {
+      try {
+        const ts = await api('GET', `/tasks?project_id=${id}`);
+        const el = $('#projTasks', root); if (!el) return;
+        el.innerHTML = ts.length ? ts.map(t => `
+          <div class="fu-item" data-opentask="${t.id}" style="cursor:pointer" title="업무 열기">
+            ${statusPill(t.status)}
+            <span class="fu-text">${esc(t.title)}</span>
+            ${prioBadge(t.priority)}
+            <span class="t-muted">${esc(t.target_date || '')}</span>
+          </div>`).join('') : '<div class="t-muted">하위 업무가 없습니다.</div>';
+        el.querySelectorAll('[data-opentask]').forEach(r => r.addEventListener('click', () => {
+          closeModal(); openTaskModal(Number(r.dataset.opentask), { onSaved });
+        }));
+      } catch { /* 하위 업무 로드 실패는 무시 */ }
+    })();
+  }
 }
 
 /* ---- 업무(하위업무) 모달 ---- */
@@ -1923,6 +2162,7 @@ async function openTaskModal(id, opts = {}) {
   let d;
   if (editing) {
     d = await api('GET', '/tasks').then(ts => ts.find(t => Number(t.id) === Number(id)));
+    if (!d) d = await api('GET', '/tasks?archived=1').then(ts => ts.find(t => Number(t.id) === Number(id)));
     if (!d) return toast('업무를 찾을 수 없습니다', true);
   } else {
     d = { status: '진행중', priority: '보통', project_id: opts.project_id ? Number(opts.project_id) : '', target_date: opts.target_date || '' };
@@ -1943,6 +2183,10 @@ async function openTaskModal(id, opts = {}) {
         <div class="field"><label>완료일</label><input class="input" name="done_date" type="date" value="${esc(d.done_date || '')}"></div>
       </form>
       <div class="link-section"><div class="section-title">파일 링크 <span class="t-muted" style="font-weight:400;font-size:12px">(클라우드 저장소 주소)</span></div><div id="taskLinks"></div></div>
+      <div class="fu-section"><div class="section-title">세부 To-Do <span class="t-muted" style="font-weight:400;font-size:12px">(단순 체크 항목)</span></div>
+        <div id="tdList">${editing ? '<div class="t-muted">불러오는 중…</div>' : '<div class="t-muted">저장 후 세부 To-Do를 추가할 수 있습니다.</div>'}</div>
+        ${editing ? `<div class="fu-add"><input class="input" id="tdContent" placeholder="세부 To-Do 입력 후 Enter"><button class="btn btn-sm btn-primary" id="tdAdd">추가</button></div>` : ''}
+      </div>
       <div class="fu-section"><div class="section-title">진행상황 F/U <span class="t-muted" style="font-weight:400;font-size:12px">(날짜별 진행 기록)</span></div>
         <div id="fuList" class="fu-list">${editing ? '<div class="t-muted">불러오는 중…</div>' : '<div class="t-muted">저장 후 진행 기록을 추가할 수 있습니다.</div>'}</div>
         ${editing ? `<div class="fu-add"><input class="input" type="date" id="fuDate" style="width:auto"><input class="input" id="fuContent" placeholder="진행 내용 입력"><button class="btn btn-sm btn-primary" id="fuAdd">추가</button></div>` : ''}
@@ -1973,7 +2217,19 @@ async function openTaskModal(id, opts = {}) {
       if (!confirm(`'${d.title}' 업무를 삭제할까요?`)) return;
       try { await api('DELETE', `/tasks/${id}`); toast('삭제되었습니다'); closeModal(); opts.onSaved && opts.onSaved(); } catch (e) { toast(e.message, true); }
     });
-    await loadFollowups(id, root);
+    await Promise.all([loadFollowups(id, root), loadTaskTodos(id, root, opts)]);
+    const tdAddBtn = $('#tdAdd', root), tdContent = $('#tdContent', root);
+    const addTd = async () => {
+      const c = tdContent.value.trim(); if (!c) return;
+      try {
+        await api('POST', `/tasks/${id}/todos`, { content: c });
+        tdContent.value = ''; tdContent.focus();
+        await loadTaskTodos(id, root, opts);
+        opts.onSaved && opts.onSaved();   // 목록의 To-Do 배지 갱신
+      } catch (e) { toast(e.message, true); }
+    };
+    if (tdAddBtn) tdAddBtn.addEventListener('click', addTd);
+    if (tdContent) tdContent.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); addTd(); } });
     $('#fuAdd', root).addEventListener('click', async () => {
       const content = $('#fuContent', root).value.trim();
       if (!content) return toast('진행 내용을 입력하세요', true);
@@ -1986,6 +2242,37 @@ async function openTaskModal(id, opts = {}) {
     });
   }
 }
+// 업무 모달 내 세부 To-Do 목록 — 체크/마감일/삭제 즉시 반영
+async function loadTaskTodos(taskId, root, opts = {}) {
+  const list = $('#tdList', root); if (!list) return;
+  const rows = await api('GET', `/tasks/${taskId}/todos`);
+  list.innerHTML = rows.length ? rows.map(todoLineHTML).join('') : `<div class="t-muted">등록된 To-Do가 없습니다.</div>`;
+  list.querySelectorAll('.todo-line').forEach(line => {
+    const check = line.querySelector('.todo-check');
+    check.addEventListener('change', async () => {
+      try {
+        await api('PUT', `/todos/${check.dataset.todo}`, { done: check.checked ? 1 : 0 });
+        line.classList.toggle('done', check.checked);
+        opts.onSaved && opts.onSaved();
+      } catch (e) { toast(e.message, true); check.checked = !check.checked; }
+    });
+    const dateInput = line.querySelector('.todo-due');
+    if (dateInput) {
+      dateInput.addEventListener('click', ev => ev.stopPropagation());
+      dateInput.addEventListener('change', async () => {
+        try { await api('PUT', `/todos/${dateInput.dataset.tododate}`, { due_date: dateInput.value }); }
+        catch (e) { toast(e.message, true); }
+      });
+    }
+    const del = line.querySelector('.todo-del');
+    del.addEventListener('click', async ev => {
+      ev.preventDefault(); ev.stopPropagation();
+      try { await api('DELETE', `/todos/${del.dataset.todel}`); line.remove(); opts.onSaved && opts.onSaved(); }
+      catch (e) { toast(e.message, true); }
+    });
+  });
+}
+
 async function loadFollowups(taskId, root) {
   const list = $('#fuList', root); if (!list) return;
   const rows = await api('GET', `/tasks/${taskId}/followups`);
@@ -2001,15 +2288,101 @@ async function loadFollowups(taskId, root) {
   }));
 }
 
+/* ---- 업무 세트(패키지 프리셋) 모달 ---- */
+function presetContent(p) {
+  let c = p?.content;
+  if (typeof c === 'string') { try { c = JSON.parse(c); } catch { c = {}; } }
+  return c && typeof c === 'object' ? c : {};
+}
+async function openPresetModal(onChanged) {
+  await getUsers(); todoUsers = _usersCache;
+  let presets = [];
+  let pickId = null;
+
+  openModal(`
+    <div class="modal-head"><h3>📦 업무 세트</h3><button class="x" data-x>×</button></div>
+    <div class="modal-body">
+      <p class="t-muted" style="font-size:12.5px;margin-bottom:12px">자주 반복되는 업무 묶음(프로젝트+하위 업무+To-Do)을 저장해 두고 필요할 때 한 번에 불러옵니다.<br>
+      세트 만들기: 프로젝트 상세를 열어 <b>📦 세트로 저장</b>을 누르세요. 정기 실행이 필요하면 🔁 반복 업무에서 세트를 연결하세요.</p>
+      <div id="presetList" class="rule-list"><div class="t-muted">불러오는 중…</div></div>
+      <div id="presetRun"></div>
+    </div>
+    <div class="modal-foot"><div class="spacer"></div><button class="btn" data-x>닫기</button></div>`, 'lg');
+  const root = $('#modal-root');
+  root.querySelectorAll('[data-x]').forEach(b => b.addEventListener('click', () => { closeModal(); onChanged && onChanged(); }));
+
+  function drawRun() {
+    const box = $('#presetRun', root);
+    const p = presets.find(x => Number(x.id) === Number(pickId));
+    if (!p) { box.innerHTML = ''; return; }
+    const c = presetContent(p);
+    box.innerHTML = `
+      <div class="section-title">'${esc(p.name)}' 불러오기</div>
+      <div class="form-grid">
+        <div class="field"><label>기준일 *</label><input class="input" id="prBase" type="date" value="${todayStr()}"></div>
+        <div class="field"><label>담당자 (전체 업무에 지정)</label><select class="select" id="prAsg">${userOpts('')}</select></div>
+        <div class="field full t-muted" style="font-size:12px">생성될 업무 (목표일 = 기준일 + 일수): ${(c.tasks || []).map(t => `${esc(t.title)}(+${t.offset || 0}일)`).join(', ') || '없음'}</div>
+        <div class="field full"><button class="btn btn-primary" id="prGo" type="button">이 세트로 업무 생성</button></div>
+      </div>`;
+    $('#prGo', box).addEventListener('click', async () => {
+      try {
+        const r = await api('POST', `/presets/${p.id}/instantiate`, { base_date: $('#prBase', box).value, assignee_id: $('#prAsg', box).value || null });
+        toast(`'${p.name}' 세트로 업무 ${r.count}건이 생성되었습니다`);
+        closeModal(); onChanged && onChanged();
+      } catch (e) { toast(e.message, true); }
+    });
+  }
+
+  async function drawList() {
+    presets = await api('GET', '/presets');
+    const list = $('#presetList', root);
+    list.innerHTML = presets.length ? presets.map(p => {
+      const c = presetContent(p);
+      const n = (c.tasks || []).length;
+      return `
+      <div class="rule-item">
+        <span class="rule-title">📦 ${esc(p.name)}</span>
+        <span class="t-muted" title="${esc((c.tasks || []).map(t => t.title).join(', '))}">업무 ${n}건${c.project ? ' · 프로젝트 포함' : ''}</span>
+        <div class="spacer"></div>
+        <button class="btn btn-sm btn-primary" data-puse="${p.id}">불러오기</button>
+        <button class="btn btn-sm" data-pname="${p.id}">이름 변경</button>
+        <button class="btn btn-sm btn-danger" data-pdel="${p.id}">삭제</button>
+      </div>`;
+    }).join('') : `<div class="t-muted" style="padding:8px 0 14px">저장된 세트가 없습니다. 프로젝트 상세의 '📦 세트로 저장'으로 만들 수 있습니다.</div>`;
+    list.querySelectorAll('[data-puse]').forEach(b => b.addEventListener('click', () => { pickId = Number(b.dataset.puse); drawRun(); }));
+    list.querySelectorAll('[data-pname]').forEach(b => b.addEventListener('click', async () => {
+      const p = presets.find(x => Number(x.id) === Number(b.dataset.pname));
+      const name = prompt('세트 이름', p.name); if (!name || !name.trim()) return;
+      try { await api('PUT', `/presets/${p.id}`, { name: name.trim() }); await drawList(); } catch (e) { toast(e.message, true); }
+    }));
+    list.querySelectorAll('[data-pdel]').forEach(b => b.addEventListener('click', async () => {
+      const p = presets.find(x => Number(x.id) === Number(b.dataset.pdel));
+      if (!confirm(`'${p.name}' 세트를 삭제할까요?\n연결된 반복 규칙은 단일 업무 생성으로 전환됩니다.`)) return;
+      try { await api('DELETE', `/presets/${p.id}`); if (pickId === p.id) { pickId = null; drawRun(); } await drawList(); } catch (e) { toast(e.message, true); }
+    }));
+  }
+  await drawList();
+}
+
 /* ---- 정기(반복) 업무 관리 모달 ---- */
 function recurDesc(r) {
   if (r.freq === 'weekly') return `매주 ${DOW_LABELS[r.dow] ?? '?'}요일`;
   if (r.freq === 'monthly') return `매월 ${r.dom}일`;
+  if (r.freq === 'quarterly') return `분기 (${r.month}월 기준 ${r.day}일)`;
+  if (r.freq === 'halfyearly') return `반기 (${r.month}월 기준 ${r.day}일)`;
   if (r.freq === 'yearly') return `매년 ${r.month}월 ${r.day}일`;
   return r.freq;
 }
+// 규칙의 todos(jsonb/문자열)를 문자열 배열로
+function ruleTodos(r) {
+  let v = r?.todos;
+  if (typeof v === 'string') { try { v = JSON.parse(v); } catch { v = []; } }
+  return Array.isArray(v) ? v : [];
+}
 async function openRecurringModal(onChanged) {
   await getUsers(); todoUsers = _usersCache;
+  let presets = [];
+  try { presets = await api('GET', '/presets'); } catch { /* 세트 없이도 동작 */ }
   let rules = [];
   let editId = null;   // 수정 중인 규칙 id (null이면 신규)
 
@@ -2025,16 +2398,21 @@ async function openRecurringModal(onChanged) {
         <div class="field" data-when="weekly"><label>요일 *</label><select class="select" name="dow">
           ${DOW_LABELS.map((l, i) => `<option value="${i}" ${i === 1 ? 'selected' : ''}>${l}요일</option>`).join('')}</select></div>
         <div class="field" data-when="monthly" style="display:none"><label>일자 *</label><input class="input" name="dom" type="number" min="1" max="31" value="25" placeholder="1~31 (말일은 31)"></div>
-        <div class="field contents" data-when="yearly" style="display:none">
-          <div class="field"><label>월 *</label><input class="input" name="month" type="number" min="1" max="12" value="1"></div>
+        <div class="field contents" data-when="yearly quarterly halfyearly" style="display:none">
+          <div class="field"><label>기준월 *</label><input class="input" name="month" type="number" min="1" max="12" value="1" title="분기/반기는 이 달부터 3/6개월 간격으로 도래"></div>
           <div class="field"><label>일 *</label><input class="input" name="day" type="number" min="1" max="31" value="1"></div>
         </div>
-        <div class="field"><label>미리 등록(일)</label><input class="input" name="lead_days" type="number" min="0" max="60" value="7" title="도래일 며칠 전에 업무를 생성할지"></div>
-        <div class="field full"><label>제목 *</label><input class="input" name="title" placeholder="예: 급여 지급, 주간회의 준비"></div>
+        <div class="field"><label>미리 등록(일)</label><input class="input" name="lead_days" type="number" min="0" max="90" value="7" title="도래일 며칠 전에 업무를 생성할지"></div>
+        <div class="field full"><label>제목 *</label><input class="input" name="title" placeholder="예: 급여 지급, 근로계약 준비"></div>
         <div class="field full"><label>내용</label><input class="input" name="content"></div>
         <div class="field"><label>구분 *</label><select class="select" name="subcategory">${subcatOpts('')}</select></div>
         <div class="field"><label>중요도</label><select class="select" name="priority">${TODO_PRIORITY.map(p => `<option ${p === '보통' ? 'selected' : ''}>${esc(p)}</option>`).join('')}</select></div>
         <div class="field"><label>담당자</label><select class="select" name="assignee_id">${userOpts('')}</select></div>
+        <div class="field"><label>세트 연결 (선택)</label><select class="select" name="preset_id">
+          <option value="">(연결 안 함 — 단일 업무 생성)</option>
+          ${presets.map(p => `<option value="${p.id}">📦 ${esc(p.name)}</option>`).join('')}</select></div>
+        <div class="field full"><label>세부 To-Do 프리셋 <span class="t-muted" style="font-weight:400;font-size:11.5px">(한 줄에 하나 — 업무 생성 시 함께 등록. 세트 연결 시 무시)</span></label>
+          <textarea class="input" name="todos_text" rows="3" placeholder="계약서 양식 갱신&#10;대상자 명단 확정&#10;결재 상신"></textarea></div>
       </form>
     </div>
     <div class="modal-foot">
@@ -2045,10 +2423,10 @@ async function openRecurringModal(onChanged) {
   root.querySelectorAll('[data-x]').forEach(b => b.addEventListener('click', () => { closeModal(); onChanged && onChanged(); }));
   const form = $('#ruleForm', root);
 
-  // 주기 선택에 따라 입력 필드 전환
+  // 주기 선택에 따라 입력 필드 전환 (data-when은 공백 구분 목록)
   function syncFreqFields() {
     const f = $('#rFreq', root).value;
-    root.querySelectorAll('[data-when]').forEach(el => { el.style.display = el.dataset.when === f ? '' : 'none'; });
+    root.querySelectorAll('[data-when]').forEach(el => { el.style.display = el.dataset.when.split(' ').includes(f) ? '' : 'none'; });
   }
   $('#rFreq', root).addEventListener('change', syncFreqFields);
 
@@ -2068,6 +2446,8 @@ async function openRecurringModal(onChanged) {
     form.subcategory.value = r?.subcategory || '';
     form.priority.value = r?.priority || '보통';
     form.assignee_id.value = r?.assignee_id ?? '';
+    form.preset_id.value = r?.preset_id ?? '';
+    form.todos_text.value = ruleTodos(r).join('\n');
     syncFreqFields();
   }
   $('#ruleCancel', root).addEventListener('click', () => fillForm(null));
@@ -2080,7 +2460,9 @@ async function openRecurringModal(onChanged) {
         <span class="rule-cycle">${esc(recurDesc(r))}</span>
         <span class="rule-title">${esc(r.title)}</span>
         <span class="pill sub">${esc(r.subcategory || '')}</span>
-        <span class="t-muted">${r.assignee_name ? esc(r.assignee_name) : '미지정'} · ${r.lead_days}일 전 등록</span>
+        ${r.preset_name ? `<span class="pill blue" title="세트 연결 — 도래 시 세트 전체 생성">📦 ${esc(r.preset_name)}</span>` : ''}
+        ${ruleTodos(r).length ? `<span class="pill gray" title="${esc(ruleTodos(r).join(', '))}">☑ ${ruleTodos(r).length}</span>` : ''}
+        <span class="t-muted">${r.assignee_name ? esc(r.assignee_name) : '미지정'} · ${r.lead_days}일 전 등록${r.active && r.next_due ? ` · 다음 ${esc(r.next_due)}` : ''}</span>
         <div class="spacer"></div>
         <button class="btn btn-sm" data-rtoggle="${r.id}">${r.active ? '중지' : '재개'}</button>
         <button class="btn btn-sm" data-redit="${r.id}">수정</button>
@@ -2102,15 +2484,115 @@ async function openRecurringModal(onChanged) {
     const body = Object.fromEntries(new FormData(form).entries());
     if (!body.title.trim()) return toast('제목은 필수입니다', true);
     if (!body.subcategory) return toast('구분을 선택하세요', true);
+    body.todos = String(body.todos_text || '').split('\n').map(s => s.trim()).filter(Boolean);
+    delete body.todos_text;
+    body.preset_id = body.preset_id || null;
     try {
       if (editId) await api('PUT', `/recurring/${editId}`, body);
       else await api('POST', '/recurring', body);
-      toast('저장되었습니다'); fillForm(null); await drawRules();
+      toast('저장되었습니다'); fillForm(null); modalDirty = false; await drawRules();
     } catch (e) { toast(e.message, true); }
   });
 
   syncFreqFields();
   await drawRules();
+}
+
+/* ============ 연간 계획 ============ */
+let annualYear = new Date().getFullYear();
+async function viewAnnual(view) {
+  view.innerHTML = topbar('연간 계획', `<button class="btn" id="annRecur">🔁 반복 업무 관리</button>`);
+  wireTopbar(view);
+  $('#annRecur', view).addEventListener('click', () => openRecurringModal(() => draw()));
+  await getUsers(); todoUsers = _usersCache;
+  const body = document.createElement('div'); view.appendChild(body);
+  const flt = { category: '', assignee: '' };
+
+  async function draw() {
+    body.innerHTML = `<div class="empty">불러오는 중…</div>`;
+    let d;
+    try { d = await api('GET', `/annual?year=${annualYear}`); }
+    catch (e) { body.innerHTML = `<div class="empty"><div class="big">⚠️</div>${esc(e.message)}</div>`; return; }
+
+    const rules = d.rules.filter(r =>
+      (!flt.category || r.category === flt.category) &&
+      (!flt.assignee || String(r.assignee_id) === flt.assignee));
+
+    // 규칙별·월별 버킷: 생성된 인스턴스 + 미래 투영
+    const instByRule = {};
+    for (const t of d.instances) {
+      const m = Number((t.target_date || '').slice(5, 7));
+      if (!t.recurring_rule_id || !m) continue;
+      ((instByRule[t.recurring_rule_id] ||= {})[m] ||= []).push(t);
+    }
+    const projByRule = {};
+    for (const [rid, dates] of Object.entries(d.projections || {})) {
+      for (const ds of dates) {
+        const m = Number(ds.slice(5, 7));
+        ((projByRule[rid] ||= {})[m] ||= []).push(ds);
+      }
+    }
+
+    const today = d.today;
+    const nowMonth = Number(today.slice(5, 7));
+    const isThisYear = Number(today.slice(0, 4)) === annualYear;
+
+    const cellHtml = (r, m) => {
+      const insts = (instByRule[r.id]?.[m] || []).slice().sort((a, b) => a.target_date.localeCompare(b.target_date));
+      const instDates = new Set(insts.map(t => t.target_date));
+      const projs = (projByRule[r.id]?.[m] || []).filter(ds => !instDates.has(ds));
+      const items = [
+        ...insts.map(t => {
+          const day = Number(t.target_date.slice(8, 10));
+          let sym = '◆', cls = 'st-run';
+          if (t.status === '완료') { sym = '✅'; cls = 'st-done'; }
+          else if (t.status === '취소') { sym = '✖'; cls = 'st-cancel'; }
+          else if (t.target_date < today) { sym = '⚠️'; cls = 'st-over'; }
+          return `<span class="ann-dot ${cls}" data-task="${t.id}" title="${esc(t.title)} · ${esc(t.target_date)} · ${esc(t.status)}">${sym}<i>${day}</i></span>`;
+        }),
+        ...projs.map(ds => `<span class="ann-dot st-plan" data-rule="${r.id}" title="예정 ${esc(ds)} — 클릭하면 규칙 관리">○<i>${Number(ds.slice(8, 10))}</i></span>`),
+      ];
+      const cls = `ann-cell${isThisYear && m === nowMonth ? ' ann-col-now' : ''}`;
+      if (!items.length) return `<td class="${cls}"></td>`;
+      if (items.length > 3) return `<td class="${cls}">${items.slice(0, 3).join('')}<span class="t-muted" style="font-size:11px">+${items.length - 3}</span></td>`;
+      return `<td class="${cls}">${items.join('')}</td>`;
+    };
+
+    body.innerHTML = `
+      <div class="toolbar">
+        <button class="btn btn-sm" id="annPrev">◀</button>
+        <b style="min-width:64px;text-align:center">${annualYear}년</b>
+        <button class="btn btn-sm" id="annNext">▶</button>
+        <button class="btn btn-sm" id="annToday">올해</button>
+        <select class="select" id="annCat" style="width:auto"><option value="">구분 전체</option>${PROJECT_CATEGORIES.map(c => `<option ${flt.category === c ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select>
+        <select class="select" id="annAsg" style="width:auto"><option value="">담당 전체</option>${todoUsers.map(u => `<option value="${u.id}" ${flt.assignee === String(u.id) ? 'selected' : ''}>${esc(u.name)}</option>`).join('')}</select>
+        <div class="spacer"></div><span class="t-muted">정기 업무 ${rules.length}건</span>
+      </div>
+      <div class="ann-legend"><span>✅ 완료</span><span>◆ 진행중</span><span>⚠️ 지연</span><span>✖ 취소</span><span>○ 예정(미생성 — 시기가 되면 업무 보드에 자동 등장)</span></div>
+      <div class="card"><div class="card-body"><div class="table-wrap">
+        <table class="tbl ann-tbl"><thead><tr>
+          <th class="ann-rule">정기 업무</th><th>주기</th><th>담당</th>
+          ${[...Array(12)].map((_, i) => `<th class="${isThisYear && i + 1 === nowMonth ? 'ann-col-now' : ''}">${i + 1}월</th>`).join('')}
+        </tr></thead><tbody>
+        ${rules.length ? rules.map(r => `
+          <tr class="${r.active ? '' : 'ann-off'}">
+            <td class="ann-rule t-strong" title="${esc(r.title)}">${r.preset_name ? '📦 ' : '🔁 '}${esc(r.title)}${r.active ? '' : ' <span class="pill na" style="font-size:10px">중지</span>'}</td>
+            <td class="t-muted" style="white-space:nowrap">${esc(recurDesc(r))}</td>
+            <td class="t-muted" style="white-space:nowrap">${r.assignee_name ? `<span class="udot" style="background:${esc(r.assignee_color || '#888')}"></span>${esc(r.assignee_name)}` : '—'}</td>
+            ${[...Array(12)].map((_, i) => cellHtml(r, i + 1)).join('')}
+          </tr>`).join('') : `<tr><td colspan="15"><div class="empty"><div class="big">📋</div>등록된 정기 업무가 없습니다.<br><span class="t-muted" style="font-size:12.5px">우측 상단 <b>🔁 반복 업무 관리</b>에서 연·반기·분기·월·주 단위 업무를 예약하세요.</span></div></td></tr>`}
+        </tbody></table>
+      </div></div></div>`;
+
+    $('#annPrev', body).addEventListener('click', () => { annualYear--; draw(); });
+    $('#annNext', body).addEventListener('click', () => { annualYear++; draw(); });
+    $('#annToday', body).addEventListener('click', () => { annualYear = new Date().getFullYear(); draw(); });
+    $('#annCat', body).addEventListener('change', e => { flt.category = e.target.value; draw(); });
+    $('#annAsg', body).addEventListener('change', e => { flt.assignee = e.target.value; draw(); });
+    body.querySelectorAll('[data-task]').forEach(el => el.addEventListener('click', () => openTaskModal(Number(el.dataset.task), { onSaved: draw })));
+    body.querySelectorAll('[data-rule]').forEach(el => el.addEventListener('click', () => openRecurringModal(() => draw())));
+  }
+  await draw();
 }
 
 /* ============ 재직자 현황 ============ */
@@ -2193,7 +2675,7 @@ async function viewEmployees(view) {
     downloadCSV(`재직자현황_${todayStr()}.csv`, aoa);
   });
 
-  renderRows(await api('GET', '/employees?' + buildQs().toString()));
+  await refresh();
 }
 
 async function openEmpModal(id) {
@@ -2215,7 +2697,7 @@ async function openEmpModal(id) {
       <div class="field"><label>퇴직일자</label><input class="input" name="leave_date" type="date" value="${esc(d.leave_date || '')}"></div>
       <div class="field full"><label>부서/현장</label><input class="input" name="dept" value="${esc(d.dept || '')}"></div>
       <div class="field full"><label>소속</label><input class="input" name="org" value="${esc(d.org || '')}"></div>
-    </div></form></div>
+    </div></form>${editing ? '<div id="empHist"></div>' : ''}</div>
     <div class="modal-foot">
       ${editing ? `<button class="btn btn-danger" id="delEmp">삭제</button>` : ''}<div class="spacer"></div>
       <button class="btn" data-x>취소</button><button class="btn btn-primary" id="saveEmp">${editing ? '저장' : '추가'}</button>
@@ -2234,6 +2716,26 @@ async function openEmpModal(id) {
     if (!confirm(`'${d.name}' 인원을 삭제할까요?`)) return;
     try { await api('DELETE', `/employees/${id}`); toast('삭제되었습니다'); closeModal(); render(); } catch (e) { toast(e.message, true); }
   });
+
+  // 이 인원과 연결된 입·퇴사 기록 링크 (employee_id 기준, 백그라운드 로드)
+  if (editing) (async () => {
+    try {
+      const [onb, ofb] = await Promise.all([api('GET', '/onboarding'), api('GET', '/offboarding')]);
+      const on = onb.find(o => Number(o.employee_id) === id);
+      const off = ofb.find(o => Number(o.employee_id) === id);
+      const el = $('#empHist', root);
+      if (!el || (!on && !off)) return;
+      const parts = [];
+      if (on) parts.push(`<button class="btn btn-sm" type="button" data-hist="on:${on.id}">📥 입사 기록 (${esc(on.state)})</button>`);
+      if (off) parts.push(`<button class="btn btn-sm" type="button" data-hist="off:${off.id}">📤 퇴사 기록 (${esc(off.state)})</button>`);
+      el.innerHTML = `<div class="section-title">입·퇴사 기록</div><div class="link-add">${parts.join('')}</div>`;
+      el.querySelectorAll('[data-hist]').forEach(b => b.addEventListener('click', () => {
+        const [k, hid] = b.dataset.hist.split(':');
+        closeModal();
+        (k === 'on' ? openOnboarding : openOffboarding)(Number(hid));
+      }));
+    } catch { /* 이력 로드 실패는 무시 */ }
+  })();
 }
 
 /* ============ 사용자 관리 ============ */
@@ -2466,7 +2968,7 @@ function openSettings() {
   $('#savePw', root).addEventListener('click', async () => {
     const body = Object.fromEntries(new FormData($('#pwForm', root)).entries());
     if (!body.current || !body.next) return toast('현재/새 비밀번호를 입력하세요', true);
-    try { await api('POST', '/auth/password', body); toast('비밀번호가 변경되었습니다'); $('#pwForm', root).reset(); }
+    try { await api('POST', '/auth/password', body); toast('비밀번호가 변경되었습니다'); $('#pwForm', root).reset(); modalDirty = false; }
     catch (e) { toast(e.message, true); }
   });
   if (!isAdmin) return;

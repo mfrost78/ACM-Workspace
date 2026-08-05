@@ -138,7 +138,7 @@ export function progress(taskDefs, category, tasks) {
   for (const t of act) {
     const v = tasks?.[t.key];
     if (t.type === 'amount') { if (v !== undefined && v !== null && String(v) !== '') done++; continue; }
-    if (v && !String(v).startsWith('미') && v !== '미대상') done++;
+    if (v === '미대상' || (v && !String(v).startsWith('미'))) done++;
   }
   return Math.round((done / act.length) * 100);
 }
@@ -204,7 +204,7 @@ export const PRIORITY_ORDER = { '초비상': 0, '우선': 1, '보통': 2, '여�
 export const PRIORITY_COLOR = { '초비상': '#e0483f', '우선': '#e08a2e', '보통': '#4577d4', '여유': '#9aa0a6' };
 
 // 정기(반복) 업무 주기
-export const RECUR_FREQ = [['weekly', '매주'], ['monthly', '매월'], ['yearly', '매년']];
+export const RECUR_FREQ = [['weekly', '매주'], ['monthly', '매월'], ['quarterly', '분기'], ['halfyearly', '반기'], ['yearly', '매년']];
 export const DOW_LABELS = ['일', '월', '화', '수', '목', '금', '토'];
 
 export const POSITIONS = ['사원', '주임', '대리', '과장', '차장', '부장', '이사대우', '이사', '상무', '전무', '부사장', '사장', '기술책임수석', '기술책임수석(STO)', '관리소장', '영선원', '미화원'];

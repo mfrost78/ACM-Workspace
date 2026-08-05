@@ -35,9 +35,9 @@
   --shadow: 0 12px 40px rgba(20,22,16,.10);
   --shadow-sm: none;
   --backdrop: rgba(20,22,16,.35);
-  --tone-done-bg: #dff3c2;            --tone-done-fg: #3e6212;
-  --tone-todo-bg: rgba(255,149,0,.16);--tone-todo-fg: #a05500;
-  --tone-na-bg:   rgba(20,22,16,.07); --tone-na-fg:   #6e7069;
+  --tone-done-bg: rgba(52,199,89,.22);  --tone-done-fg: #1a7a34;
+  --tone-todo-bg: rgba(255,59,48,.15);  --tone-todo-fg: #c8291f;
+  --tone-na-bg:   rgba(20,22,16,.07);   --tone-na-fg:   #6e7069;
 }
 
 /* Dark — 차콜 + 라임 */
@@ -60,8 +60,8 @@
   --accent: #8fb4f7; --accent-hover: #a8c5fa; --accent-soft: rgba(143,180,247,.16);
   --brand: #5d8ce0; --brand-strong: #7aa3ec; --brand-soft: rgba(93,140,224,.22); --brand-on: #ffffff;
   --ink: #181a16; --ink-2: #2a2d27;
-  --tone-done-bg: rgba(168,217,22,.22); --tone-done-fg: #c8e96a;
-  --tone-todo-bg: rgba(255,159,10,.2);  --tone-todo-fg: #ffb340;
+  --tone-done-bg: rgba(52,199,89,.3);   --tone-done-fg: #6fe08f;
+  --tone-todo-bg: rgba(255,69,58,.3);   --tone-todo-fg: #ff9d94;
   --tone-na-bg:   rgba(255,255,255,.09);--tone-na-fg:  #a2a49b;
 }
 
@@ -263,9 +263,9 @@ table.xls-tbl .cell-input, table.xls-tbl .cell-select {
 table.xls-tbl .cell-select { padding-right: 24px; background-position: right 7px center; }
 table.xls-tbl input[type="number"].cell-input { min-width: 90px; }
 table.xls-tbl input[type="date"].cell-input { min-width: 130px; }
-/* 완료(초록)/미완료(앰버)/대상아님(회색) 색 구분 강화 — 굵게 + 좌측 컬러 바 */
-table.xls-tbl .cell-select.tone-done { background-color: var(--tone-done-bg); color: var(--tone-done-fg); border-color: transparent; font-weight: 600; box-shadow: inset 3px 0 0 0 #4aa11a; }
-table.xls-tbl .cell-select.tone-todo { background-color: var(--tone-todo-bg); color: var(--tone-todo-fg); border-color: transparent; font-weight: 600; box-shadow: inset 3px 0 0 0 var(--orange); }
+/* 완료(초록)/미완료(빨강)/대상아님(회색) 색 구분 강화 — 굵게 + 좌측 컬러 바 */
+table.xls-tbl .cell-select.tone-done { background-color: var(--tone-done-bg); color: var(--tone-done-fg); border-color: transparent; font-weight: 700; box-shadow: inset 3px 0 0 0 var(--green); }
+table.xls-tbl .cell-select.tone-todo { background-color: var(--tone-todo-bg); color: var(--tone-todo-fg); border-color: transparent; font-weight: 700; box-shadow: inset 3px 0 0 0 var(--red); }
 table.xls-tbl .cell-select.tone-na   { background-color: var(--tone-na-bg);   color: var(--tone-na-fg);   border-color: transparent; }
 .name-link { cursor: pointer; }
 .name-link:hover { text-decoration: underline; color: var(--accent); }
@@ -853,3 +853,24 @@ table.xls-tbl thead th[title] { cursor: help; }
 .avatar, .udot, .dot, .color-swatch, .nav-item .badge, .nav-menu-item .badge { border-radius: 50% !important; }
 /* 이달/진행중 두 숫자를 함께 표기하는 뱃지는 원형 대신 알약형 */
 .nav-menu-item .badge.badge-dual { border-radius: 9px !important; min-width: auto; padding: 0 7px; }
+
+/* ============ 연간 계획 ============ */
+.ann-legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12px; color: var(--text-muted, #777); margin: 2px 2px 10px; }
+.ann-tbl th, .ann-tbl td { text-align: center; }
+.ann-tbl .ann-rule { text-align: left; max-width: 220px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ann-cell { min-width: 54px; }
+.ann-col-now { background: var(--bg-hover, rgba(0, 113, 227, .07)); }
+.ann-dot { display: inline-flex; align-items: baseline; gap: 1px; cursor: pointer; font-size: 12px; margin: 0 2px; line-height: 1.4; }
+.ann-dot i { font-style: normal; font-size: 10px; color: var(--text-muted, #888); }
+.ann-dot.st-plan { opacity: .75; }
+.ann-dot:hover { transform: scale(1.15); }
+tr.ann-off { opacity: .45; }
+
+/* ============ 리스트 뷰 — 완료/취소 업무 구분 표시 ============ */
+.task-row .task-done-chk { flex-shrink: 0; width: 15px; height: 15px; cursor: pointer; accent-color: var(--green, #34c759); }
+.task-row .task-cancel-mark { flex-shrink: 0; width: 15px; text-align: center; color: var(--text-muted, #999); font-size: 12px; }
+.task-row.is-done { background: var(--bg-hover, rgba(0, 0, 0, .035)); }
+.task-row.is-done .task-name { text-decoration: line-through; color: var(--text-muted, #999); font-weight: 400; }
+.task-row.is-done .asg, .task-row.is-done .tr-date, .task-row.is-done .fu-last { opacity: .65; }
+.task-row.is-cancel { background: var(--bg-hover, rgba(0, 0, 0, .035)); opacity: .55; }
+.task-row.is-cancel .task-name { text-decoration: line-through; color: var(--text-muted, #999); }

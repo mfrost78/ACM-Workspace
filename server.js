@@ -10,7 +10,7 @@ import {
 } from './lib/auth.js';
 import {
   ONBOARDING_TASKS, OFFBOARDING_TASKS, activeTasks, computeDate,
-  deriveState, effectiveTasks,
+  deriveState, effectiveTasks, progress,
   TODO_STATUS, TODO_PRIORITY, PROJECT_CATEGORIES, TASK_SUBCATEGORIES,
 } from './public/js/config.js';
 
@@ -103,6 +103,16 @@ async function notifyTask({ assigned = [], unassigned = [], task, taskId, actor 
   for (const uid of assigned) jobs.push(pushNotif({ userId: uid, type: 'task_assigned', title: '새 업무가 배정되었습니다', body: task.title, taskId, actor }));
   for (const uid of unassigned) jobs.push(pushNotif({ userId: uid, type: 'task_unassigned', title: '업무 담당에서 제외되었습니다', body: task.title, taskId, actor }));
   await Promise.all(jobs);
+}
+
+// 입퇴사 체크리스트 100% 도달 시 관리자에게 '확정 대기' 알림 (진행률이 100 미만 → 100으로 넘어간 시점 1회)
+async function notifyAdminsReady(kind, name, actor) {
+  const admins = await q(`SELECT id FROM users WHERE role = 'admin'`);
+  await Promise.all(admins.map(a => pushNotif({
+    userId: a.id, type: 'hr_ready',
+    title: kind === 'on' ? '입사 체크리스트 완료 — 확정 대기' : '퇴사 체크리스트 완료 — 확정 대기',
+    body: name, actor,
+  })));
 }
 
 // 마감 임박 알림 — 진행중 + 목표일이 오늘~+DUE_LEAD_DAYS 이내인 업무의 담당자에게 1회 알림.
@@ -231,6 +241,22 @@ function nextDue(rule, afterStr) {
     }
     return null;
   }
+  // 분기(3개월)/반기(6개월) — month를 기준월로 삼아 step 간격의 달마다 day 도래 (말일 클램프)
+  if (rule.freq === 'quarterly' || rule.freq === 'halfyearly') {
+    const step = rule.freq === 'quarterly' ? 3 : 6;
+    const mm = Number(rule.month), dd = Number(rule.day);
+    if (!(mm >= 1 && mm <= 12 && dd >= 1 && dd <= 31)) return null;
+    let y = d.getUTCFullYear(), m = d.getUTCMonth();   // 0-based month
+    for (let i = 0; i < 14; i++) {
+      if ((((m + 1) - mm) % step + step) % step === 0) {
+        const last = new Date(Date.UTC(y, m + 1, 0)).getUTCDate();
+        const cand = new Date(Date.UTC(y, m, Math.min(dd, last))).toISOString().slice(0, 10);
+        if (cand > afterStr) return cand;
+      }
+      m++; if (m > 11) { m = 0; y++; }
+    }
+    return null;
+  }
   return null;
 }
 
@@ -271,12 +297,33 @@ async function generateRecurringTasks(force = false) {
       [dues[dues.length - 1], r.id, dues[dues.length - 1]]);
     if (!claimed.rowCount) continue;
     for (const due of dues) {
-      await run(
+      // 세트 연결 규칙: 도래일 기준으로 세트 전체(프로젝트+업무+To-Do)를 인스턴스화
+      if (r.preset_id) {
+        const preset = await one('SELECT * FROM task_presets WHERE id = ?', [r.preset_id]);
+        if (preset) {
+          await instantiatePreset(preset.content, due, r.assignee_id, r.created_by, r.id);
+          continue;
+        }
+        // 세트가 삭제된 경우 아래 단일 업무 생성으로 폴백
+      }
+      const row = await one(
         `INSERT INTO tasks (project_id, category, subcategory, priority, title, content, start_date, target_date, done_date, status, assignee_id, recurring_rule_id, created_by)
-         VALUES (NULL, ?, ?, ?, ?, ?, ?, ?, '', '진행중', ?, ?, ?)`,
+         VALUES (NULL, ?, ?, ?, ?, ?, ?, ?, '', '진행중', ?, ?, ?) RETURNING id`,
         [r.category, r.subcategory || '', r.priority, r.title, r.content || '', today, due, r.assignee_id, r.id, r.created_by]);
+      // 규칙에 설정한 세부 To-Do 프리셋 함께 생성
+      const tds = toStrArray(r.todos);
+      for (let i = 0; i < tds.length; i++) {
+        await run(`INSERT INTO task_todos (task_id, content, sort, created_by) VALUES (?, ?, ?, ?)`, [row.id, tds[i], i + 1, r.created_by]);
+      }
     }
   }
+}
+
+// jsonb/문자열 어떤 형태로 와도 문자열 배열로 정규화
+function toStrArray(v) {
+  let arr = v;
+  if (typeof v === 'string') { try { arr = JSON.parse(v); } catch { arr = []; } }
+  return Array.isArray(arr) ? arr.map(s => String(s).trim()).filter(Boolean) : [];
 }
 
 // 아카이브 판정: 수동 보관(archived_at) 또는 완료/취소 후 7일 경과
@@ -482,10 +529,16 @@ app.put('/api/onboarding/:id', requireAuth, wrap(async (req, res) => {
   const id = Number(req.params.id);
   const b = req.body || {};
   if ('tasks' in b) {
-    const cur = await one('SELECT category, tasks FROM onboarding WHERE id = ?', [id]);
+    const cur = await one('SELECT name, category, tasks FROM onboarding WHERE id = ?', [id]);
     if (!cur) return res.status(404).json({ error: '없음' });
     b.tasks = { ...tasksObj(cur.tasks), ...b.tasks };
-    b.state = deriveState(ONBOARDING_TASKS, b.category ?? cur.category, b.tasks);
+    const cat = b.category ?? cur.category;
+    b.state = deriveState(ONBOARDING_TASKS, cat, b.tasks);
+    // 체크리스트가 이번 변경으로 100%에 도달하면 관리자에게 확정 대기 알림
+    const prOld = progress(ONBOARDING_TASKS, cur.category, tasksObj(cur.tasks));
+    if (prOld < 100 && progress(ONBOARDING_TASKS, cat, b.tasks) === 100) {
+      bg(notifyAdminsReady('on', cur.name, req.user));
+    }
   }
   const sets = ONB_FIELDS.filter(f => f in b);
   if (!sets.length) return res.status(400).json({ error: '변경 항목 없음' });
@@ -561,7 +614,7 @@ app.put('/api/offboarding/:id', requireAuth, wrap(async (req, res) => {
   const b = req.body || {};
   if ('employee_id' in b) b.employee_id = b.employee_id ? Number(b.employee_id) : null;
   if ('tasks' in b) {
-    const cur = await one('SELECT category, tasks, join_date, leave_date FROM offboarding WHERE id = ?', [id]);
+    const cur = await one('SELECT name, category, tasks, join_date, leave_date, employee_id FROM offboarding WHERE id = ?', [id]);
     if (!cur) return res.status(404).json({ error: '없음' });
     b.tasks = { ...tasksObj(cur.tasks), ...b.tasks };
     const cat = b.category ?? cur.category;
@@ -569,6 +622,17 @@ app.put('/api/offboarding/:id', requireAuth, wrap(async (req, res) => {
     const leave = b.leave_date ?? cur.leave_date;
     const eff = effectiveTasks(OFFBOARDING_TASKS, 'off', cat, b.tasks, join, leave);
     b.state = deriveState(OFFBOARDING_TASKS, cat, eff);
+    // 체크리스트 100%라도 재직자가 실제 퇴직 처리되지 않았다면(확정 취소 상태) 자동으로 완료 전환하지 않음
+    if (b.state === '완료' && cur.employee_id) {
+      const emp = await one('SELECT status FROM employees WHERE id = ?', [cur.employee_id]);
+      if (emp && emp.status !== '퇴직') b.state = '진행중';
+    }
+    // 체크리스트가 이번 변경으로 100%에 도달하면 관리자에게 확정 대기 알림
+    const effOld = effectiveTasks(OFFBOARDING_TASKS, 'off', cur.category, tasksObj(cur.tasks), cur.join_date, cur.leave_date);
+    const prOld = progress(OFFBOARDING_TASKS, cur.category, effOld);
+    if (prOld < 100 && progress(OFFBOARDING_TASKS, cat, eff) === 100) {
+      bg(notifyAdminsReady('off', cur.name, req.user));
+    }
   }
   const sets = OFB_FIELDS.filter(f => f in b);
   if (!sets.length) return res.status(400).json({ error: '변경 항목 없음' });
@@ -659,7 +723,7 @@ app.get('/api/calendar', requireAuth, wrap(async (req, res) => {
   // 평가 예정일 — 평가서 회신일을 입력하면 일정에서 제외
   for (const o of onb) {
     const tasks = tasksObj(o.tasks);
-    if (tasks.pyeongga_hoesin) continue;
+    if (tasks.pyeongga_hoesin || tasks.daesang === '미대상') continue;
     const evalDef = activeTasks(ONBOARDING_TASKS, o.category).find(t => t.key === 'pyeongga_yejeong');
     if (!evalDef) continue;
     const date = computeDate(evalDef.calc, o.join_date);
@@ -1003,10 +1067,23 @@ app.put('/api/tasks/:id', requireAuth, wrap(async (req, res) => {
   await run(`UPDATE tasks SET ${TASK_FIELDS.map(f => `${f}=?`).join(',')}, updated_at=now() WHERE id=?`,
     [...TASK_FIELDS.map(f => next[f]), id]);
   logAct({ userId: req.user.id, userName: req.user.name, action: '업무 수정', targetType: 'task', targetId: id, detail: next.title });
-  // 알림: 담당자 지정/변경만 — 새로 배정된 담당자 / 담당에서 제외된 담당자
+  // 알림: 담당자 지정/변경 — 새로 배정된 담당자 / 담당에서 제외된 담당자
   const added = ids.filter(i => !oldIds.includes(i));
   const removed = oldIds.filter(i => !ids.includes(i));
   bg(notifyTask({ assigned: added, unassigned: removed, task: next, taskId: id, actor: req.user }));
+  // 알림: 상태 변경 — 담당자에게, 완료 시 등록자에게도 (본인이 바꾼 경우는 pushNotif가 제외)
+  const jobs = [];
+  if ('status' in b && b.status !== cur.status) {
+    const title = b.status === '완료' ? '업무가 완료되었습니다' : `업무 상태가 '${b.status}'(으)로 변경되었습니다`;
+    const targets = new Set(ids);
+    if (b.status === '완료' && cur.created_by) targets.add(Number(cur.created_by));
+    for (const uid of targets) jobs.push(pushNotif({ userId: uid, type: 'task_status', title, body: next.title, taskId: id, actor: req.user }));
+  }
+  // 알림: 목표일 변경 — 담당자에게
+  if ('target_date' in b && b.target_date !== cur.target_date) {
+    for (const uid of ids) jobs.push(pushNotif({ userId: uid, type: 'task_date', title: `목표일이 ${b.target_date || '미정'}(으)로 변경되었습니다`, body: next.title, taskId: id, actor: req.user }));
+  }
+  if (jobs.length) bg(Promise.all(jobs));
   res.json({ ok: true });
 }));
 
@@ -1030,12 +1107,19 @@ app.post('/api/tasks/:id/followups', requireAuth, wrap(async (req, res) => {
   const id = Number(req.params.id);
   const b = req.body || {};
   if (!b.content) return res.status(400).json({ error: '진행 내용은 필수입니다.' });
-  const task = await one('SELECT id FROM tasks WHERE id = ?', [id]);
+  const task = await one('SELECT * FROM tasks WHERE id = ?', [id]);
   if (!task) return res.status(404).json({ error: '업무 없음' });
   const row = await one(
     `INSERT INTO task_followups (task_id, fu_date, content, created_by) VALUES (?, ?, ?, ?) RETURNING *`,
     [id, b.fu_date || '', b.content, req.user.id]);
   logAct({ userId: req.user.id, userName: req.user.name, action: '진행상황 등록', targetType: 'task', targetId: id, detail: b.content.slice(0, 50) });
+  // 담당자 + 업무 등록자에게 진행상황 알림 (작성 본인은 pushNotif가 제외)
+  const targets = new Set(taskAssignees(task));
+  if (task.created_by) targets.add(Number(task.created_by));
+  bg(Promise.all([...targets].map(uid => pushNotif({
+    userId: uid, type: 'task_fu', title: '업무에 진행상황이 등록되었습니다',
+    body: `${task.title} — ${String(b.content).slice(0, 80)}`, taskId: id, actor: req.user,
+  }))));
   res.json(row);
 }));
 
@@ -1194,34 +1278,53 @@ app.post('/api/notifications/read', requireAuth, wrap(async (req, res) => {
 }));
 
 /* --- 정기(반복) 업무 규칙 --- */
-const RECUR_FREQ_SET = new Set(['weekly', 'monthly', 'yearly']);
+const RECUR_FREQ_SET = new Set(['weekly', 'monthly', 'quarterly', 'halfyearly', 'yearly']);
 function validRecur(b) {
   if (!RECUR_FREQ_SET.has(b.freq)) return '반복 주기가 올바르지 않습니다.';
   if (b.freq === 'weekly' && !(b.dow >= 0 && b.dow <= 6)) return '요일을 선택하세요.';
   if (b.freq === 'monthly' && !(b.dom >= 1 && b.dom <= 31)) return '일자(1~31)를 확인하세요.';
-  if (b.freq === 'yearly' && !(b.month >= 1 && b.month <= 12 && b.day >= 1 && b.day <= 31)) return '월·일을 확인하세요.';
+  if ((b.freq === 'yearly' || b.freq === 'quarterly' || b.freq === 'halfyearly')
+    && !(b.month >= 1 && b.month <= 12 && b.day >= 1 && b.day <= 31)) return '월·일을 확인하세요.';
   if (!b.title) return '제목은 필수입니다.';
   if (!ALL_SUBCATS.has(b.subcategory)) return '업무 구분 값이 올바르지 않습니다.';
   if (b.priority && !PRIORITY_SET.has(b.priority)) return '중요도 값이 올바르지 않습니다.';
-  if (!(b.lead_days >= 0 && b.lead_days <= 60)) return '미리 등록 일수(0~60)를 확인하세요.';
+  if (!(b.lead_days >= 0 && b.lead_days <= 90)) return '미리 등록 일수(0~90)를 확인하세요.';
   return null;
+}
+// 규칙의 To-Do 프리셋 정규화 — 문자열 배열(JSON 문자열 저장, 최대 30개)
+function normRuleTodos(v) {
+  let arr = v;
+  if (typeof v === 'string') { try { arr = JSON.parse(v); } catch { arr = []; } }
+  if (!Array.isArray(arr)) return '[]';
+  return JSON.stringify(arr.map(s => String(s).trim()).filter(Boolean).slice(0, 30));
 }
 function normRecur(b) {
   for (const k of ['dow', 'dom', 'month', 'day', 'lead_days']) b[k] = (b[k] === '' || b[k] === undefined || b[k] === null) ? null : Number(b[k]);
   if (b.lead_days === null) b.lead_days = 7;
   b.priority = b.priority || '보통';
   b.category = SUBCAT_GROUP[b.subcategory];
+  b.todos = normRuleTodos(b.todos);
+  b.preset_id = b.preset_id ? Number(b.preset_id) : null;
   return b;
 }
 
 app.get('/api/recurring', requireAuth, wrap(async (req, res) => {
-  res.json(await q(
-    `SELECT r.*, u.name AS assignee_name, u.color AS assignee_color
-       FROM recurring_rules r LEFT JOIN users u ON u.id = r.assignee_id
-      ORDER BY r.id DESC`));
+  const rows = await q(
+    `SELECT r.*, u.name AS assignee_name, u.color AS assignee_color, p.name AS preset_name
+       FROM recurring_rules r
+       LEFT JOIN users u ON u.id = r.assignee_id
+       LEFT JOIN task_presets p ON p.id = r.preset_id
+      ORDER BY r.id DESC`);
+  // 다음 도래일 / 업무 생성 예정일 계산 (목록 표시용)
+  const today = kstTodayStr();
+  for (const r of rows) {
+    r.next_due = nextDue(r, r.last_generated && r.last_generated > today ? r.last_generated : today);
+    r.next_create = r.next_due ? addDays(r.next_due, -(Number(r.lead_days) || 0)) : null;
+  }
+  res.json(rows);
 }));
 
-const RECUR_FIELDS = ['freq', 'dow', 'dom', 'month', 'day', 'lead_days', 'title', 'content', 'category', 'subcategory', 'priority', 'assignee_id', 'active'];
+const RECUR_FIELDS = ['freq', 'dow', 'dom', 'month', 'day', 'lead_days', 'title', 'content', 'category', 'subcategory', 'priority', 'assignee_id', 'active', 'todos', 'preset_id'];
 app.post('/api/recurring', requireAuth, wrap(async (req, res) => {
   await loadConfig();
   const b = normRecur(req.body || {});
@@ -1256,6 +1359,168 @@ app.delete('/api/recurring/:id', requireAuth, wrap(async (req, res) => {
   await run('DELETE FROM recurring_rules WHERE id = ?', [id]);   // 생성된 업무 인스턴스는 유지
   logAct({ userId: req.user.id, userName: req.user.name, action: '반복 업무 삭제', targetType: 'recurring', targetId: id, detail: row?.title });
   res.json({ ok: true });
+}));
+
+/* --- 업무 세트(패키지 프리셋) --- */
+// content 정규화: { project: {title, category, priority} | null, tasks: [{title, subcategory, priority, offset(일), todos[]}] }
+function normPresetContent(v) {
+  let c = v;
+  if (typeof c === 'string') { try { c = JSON.parse(c); } catch { c = {}; } }
+  if (!c || typeof c !== 'object' || Array.isArray(c)) c = {};
+  const pj = c.project && typeof c.project === 'object' ? c.project : null;
+  const project = pj && pj.title ? {
+    title: String(pj.title).slice(0, 200),
+    category: PROJ_CAT_SET.has(pj.category) ? pj.category : '기타',
+    priority: PRIORITY_SET.has(pj.priority) ? pj.priority : '보통',
+  } : null;
+  const tasks = (Array.isArray(c.tasks) ? c.tasks : []).slice(0, 50).map(t => ({
+    title: String(t?.title || '').slice(0, 200),
+    subcategory: String(t?.subcategory || ''),
+    priority: PRIORITY_SET.has(t?.priority) ? t.priority : '보통',
+    offset: Number.isFinite(Number(t?.offset)) ? Math.max(0, Math.round(Number(t.offset))) : 0,
+    todos: toStrArray(t?.todos).slice(0, 30),
+  })).filter(t => t.title);
+  return { project, tasks };
+}
+
+// 세트 인스턴스화 — 기준일(baseDate) 기준 offset으로 목표일 산정, 프로젝트+업무+To-Do 일괄 생성
+async function instantiatePreset(content, baseDate, assigneeId, createdBy, ruleId = null) {
+  await loadConfig();
+  const c = normPresetContent(content);
+  const today = kstTodayStr();
+  const maxOffset = c.tasks.reduce((a, t) => Math.max(a, t.offset || 0), 0);
+  const aid = assigneeId ? Number(assigneeId) : null;
+  let projectId = null;
+  if (c.project) {
+    const prow = await one(
+      `INSERT INTO projects (category, priority, title, content, start_date, target_date, done_date, status, assignee_id, created_by)
+       VALUES (?, ?, ?, '', ?, ?, '', '진행중', ?, ?) RETURNING id`,
+      [c.project.category, c.project.priority, c.project.title, baseDate, addDays(baseDate, maxOffset), aid, createdBy ?? null]);
+    projectId = prow.id;
+  }
+  for (const t of c.tasks) {
+    const sub = ALL_SUBCATS.has(t.subcategory) ? t.subcategory : '기타';
+    const row = await one(
+      `INSERT INTO tasks (project_id, category, subcategory, priority, title, content, start_date, target_date, done_date, status, assignee_id, assignee_ids, links, recurring_rule_id, created_by)
+       VALUES (?, ?, ?, ?, ?, '', ?, ?, '', '진행중', ?, ?, '[]', ?, ?) RETURNING id`,
+      [projectId, SUBCAT_GROUP[sub] || '기타', sub, t.priority, t.title, today, addDays(baseDate, t.offset || 0),
+       aid, JSON.stringify(aid ? [aid] : []), ruleId, createdBy ?? null]);
+    for (let i = 0; i < t.todos.length; i++) {
+      await run(`INSERT INTO task_todos (task_id, content, sort, created_by) VALUES (?, ?, ?, ?)`, [row.id, t.todos[i], i + 1, createdBy ?? null]);
+    }
+  }
+  return { projectId, count: c.tasks.length };
+}
+
+app.get('/api/presets', requireAuth, wrap(async (req, res) => {
+  res.json(await q(`SELECT p.*, u.name AS creator FROM task_presets p LEFT JOIN users u ON u.id = p.created_by ORDER BY p.id DESC`));
+}));
+
+app.post('/api/presets', requireAuth, wrap(async (req, res) => {
+  const b = req.body || {};
+  if (!b.name || !String(b.name).trim()) return res.status(400).json({ error: '세트 이름은 필수입니다.' });
+  const content = normPresetContent(b.content);
+  const row = await one(`INSERT INTO task_presets (name, content, created_by) VALUES (?, ?, ?) RETURNING *`,
+    [String(b.name).trim().slice(0, 100), JSON.stringify(content), req.user.id]);
+  logAct({ userId: req.user.id, userName: req.user.name, action: '업무 세트 등록', targetType: 'preset', targetId: row.id, detail: row.name });
+  res.json(row);
+}));
+
+app.put('/api/presets/:id', requireAuth, wrap(async (req, res) => {
+  const id = Number(req.params.id);
+  const cur = await one('SELECT * FROM task_presets WHERE id = ?', [id]);
+  if (!cur) return res.status(404).json({ error: '없음' });
+  const b = req.body || {};
+  const name = 'name' in b ? String(b.name).trim().slice(0, 100) : cur.name;
+  if (!name) return res.status(400).json({ error: '세트 이름은 필수입니다.' });
+  const content = 'content' in b ? JSON.stringify(normPresetContent(b.content)) : JSON.stringify(cur.content);
+  await run(`UPDATE task_presets SET name = ?, content = ?, updated_at = now() WHERE id = ?`, [name, content, id]);
+  logAct({ userId: req.user.id, userName: req.user.name, action: '업무 세트 수정', targetType: 'preset', targetId: id, detail: name });
+  res.json({ ok: true });
+}));
+
+app.delete('/api/presets/:id', requireAuth, wrap(async (req, res) => {
+  const id = Number(req.params.id);
+  const row = await one('SELECT name FROM task_presets WHERE id = ?', [id]);
+  await run('DELETE FROM task_presets WHERE id = ?', [id]);
+  await run('UPDATE recurring_rules SET preset_id = NULL WHERE preset_id = ?', [id]);   // 연결된 규칙은 단일 업무로 폴백
+  logAct({ userId: req.user.id, userName: req.user.name, action: '업무 세트 삭제', targetType: 'preset', targetId: id, detail: row?.name });
+  res.json({ ok: true });
+}));
+
+// 세트 불러오기 — 기준일/담당자를 받아 즉시 인스턴스화 (부정기 실행)
+app.post('/api/presets/:id/instantiate', requireAuth, wrap(async (req, res) => {
+  const id = Number(req.params.id);
+  const preset = await one('SELECT * FROM task_presets WHERE id = ?', [id]);
+  if (!preset) return res.status(404).json({ error: '없음' });
+  const base = String(req.body?.base_date || '').trim() || kstTodayStr();
+  const aid = req.body?.assignee_id ? Number(req.body.assignee_id) : null;
+  const r = await instantiatePreset(preset.content, base, aid, req.user.id, null);
+  logAct({ userId: req.user.id, userName: req.user.name, action: '업무 세트 불러오기', targetType: 'preset', targetId: id, detail: `${preset.name} (기준일 ${base})` });
+  if (aid) bg(pushNotif({ userId: aid, type: 'task_assigned', title: `업무 세트 '${preset.name}' ${r.count}건이 배정되었습니다`, body: '', actor: req.user }));
+  res.json({ ok: true, project_id: r.projectId, count: r.count });
+}));
+
+// 기존 프로젝트(하위 업무·To-Do 포함)를 세트로 저장 — 실전 데이터의 템플릿화
+app.post('/api/projects/:id/save-preset', requireAuth, wrap(async (req, res) => {
+  const id = Number(req.params.id);
+  const p = await one('SELECT * FROM projects WHERE id = ?', [id]);
+  if (!p) return res.status(404).json({ error: '없음' });
+  const ts = await q('SELECT * FROM tasks WHERE project_id = ? ORDER BY id', [id]);
+  const tds = ts.length
+    ? await q(`SELECT * FROM task_todos WHERE task_id IN (${ts.map(() => '?').join(',')}) ORDER BY sort, id`, ts.map(t => t.id))
+    : [];
+  const tdMap = {}; for (const td of tds) (tdMap[td.task_id] ||= []).push(td.content);
+  const dates = ts.map(t => t.target_date).filter(Boolean);
+  const base = p.start_date || (dates.length ? dates.reduce((a, b) => (a < b ? a : b)) : '');
+  const dayDiff = (a, b) => Math.round((new Date(b + 'T00:00:00Z') - new Date(a + 'T00:00:00Z')) / 86400000);
+  const content = {
+    project: { title: p.title, category: p.category, priority: p.priority },
+    tasks: ts.map(t => ({
+      title: t.title, subcategory: t.subcategory || '기타', priority: t.priority,
+      offset: base && t.target_date ? Math.max(0, dayDiff(base, t.target_date)) : 0,
+      todos: tdMap[t.id] || [],
+    })),
+  };
+  const name = String(req.body?.name || p.title).trim().slice(0, 100);
+  const row = await one(`INSERT INTO task_presets (name, content, created_by) VALUES (?, ?, ?) RETURNING *`,
+    [name, JSON.stringify(normPresetContent(content)), req.user.id]);
+  logAct({ userId: req.user.id, userName: req.user.name, action: '프로젝트 → 세트 저장', targetType: 'preset', targetId: row.id, detail: name });
+  res.json(row);
+}));
+
+/* --- 연간 계획 --- */
+// 규칙 + 해당 연도 생성 인스턴스 + 미래 도래일 투영을 한 번에 반환
+app.get('/api/annual', requireAuth, wrap(async (req, res) => {
+  await generateRecurringTasks();
+  const today = kstTodayStr();
+  const year = Number(req.query.year) || Number(today.slice(0, 4));
+  const [rules, instances] = await Promise.all([
+    q(`SELECT r.*, u.name AS assignee_name, u.color AS assignee_color, p.name AS preset_name
+         FROM recurring_rules r
+         LEFT JOIN users u ON u.id = r.assignee_id
+         LEFT JOIN task_presets p ON p.id = r.preset_id
+        ORDER BY r.id`),
+    q(`SELECT id, title, status, target_date, done_date, recurring_rule_id FROM tasks
+        WHERE recurring_rule_id IS NOT NULL AND target_date >= ? AND target_date <= ?`,
+      [`${year}-01-01`, `${year}-12-31`]),
+  ]);
+  // 미래 도래일 투영 — 이미 생성된(last_generated 이전) 도래일은 제외
+  const projections = {};
+  const yearEnd = `${year}-12-31`;
+  const floor = today > `${year - 1}-12-31` ? today : `${year - 1}-12-31`;
+  for (const r of rules) {
+    if (!r.active) continue;
+    const dues = [];
+    let cur = r.last_generated && r.last_generated > floor ? r.last_generated : floor;
+    while (dues.length < 60) {
+      const n = nextDue(r, cur);
+      if (!n || n > yearEnd) break;
+      dues.push(n); cur = n;
+    }
+    if (dues.length) projections[r.id] = dues;
+  }
+  res.json({ year, today, rules, instances, projections });
 }));
 
 /* ---------------- Static ---------------- */
