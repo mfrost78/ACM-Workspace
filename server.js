@@ -1528,9 +1528,13 @@ const STATIC_CACHE = 'public, max-age=300, s-maxage=86400, stale-while-revalidat
 // 진입 문서는 항상 재검증한다. 이게 캐시되면 '구 HTML + 신 JS' 조합이 생겨
 // 아이콘 스프라이트가 없는 문서에 새 스크립트가 붙는 깨진 상태가 될 수 있다.
 const HTML_CACHE = 'no-cache';
+// 폰트는 2MB짜리 불변 파일 — 짧은 캐시를 물리면 5분마다 다시 받는다. 1년 고정.
+// (교체가 필요하면 파일명을 바꾸면 된다)
+const FONT_CACHE = 'public, max-age=31536000, immutable';
 app.use(express.static(path.join(__dirname, 'public'), {
   index: false,                                   // '/' 는 아래 핸들러가 처리 (헤더 제어)
-  setHeaders: (res) => res.setHeader('Cache-Control', STATIC_CACHE),
+  setHeaders: (res, filePath) => res.setHeader('Cache-Control',
+    /\.(woff2?|ttf|otf)$/i.test(filePath) ? FONT_CACHE : STATIC_CACHE),
 }));
 app.get('*', (req, res) => {
   res.setHeader('Cache-Control', HTML_CACHE);

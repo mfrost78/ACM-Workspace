@@ -9,8 +9,20 @@
    · -c-*-fg 는 칩 글자 전용(소형 텍스트 4.5:1 확보), -c-* 는 마크·레일용
    · 모서리는 직각 하나로 통일 (원형 예외만 아래 명시)
    ============================================================ */
+/* Pretendard Variable — 저장소에 동봉(SIL OFL 1.1, public/fonts/LICENSE-Pretendard.txt).
+   CSP 가 default-src 'self' 라 외부 폰트 CDN 은 차단되므로 반드시 self-host 해야 한다.
+   가변 폰트 1개로 100~900 굵기를 모두 커버 → 굵기별 파일이 필요 없다.
+   swap: 폰트가 뜨기 전에도 시스템 폰트로 즉시 글자가 보인다. */
+@font-face {
+  font-family: "Pretendard Variable";
+  font-style: normal;
+  font-weight: 45 920;
+  font-display: swap;
+  src: url("/fonts/PretendardVariable.woff2") format("woff2-variations");
+}
+
 :root {
-  --font: "Pretendard", "Pretendard Variable", -apple-system, BlinkMacSystemFont,
+  --font: "Pretendard Variable", "Pretendard", -apple-system, BlinkMacSystemFont,
           "Apple SD Gothic Neo", "Malgun Gothic", "맑은 고딕", system-ui, sans-serif;
   --mono: ui-monospace, SFMono-Regular, "SF Mono", Consolas, "Liberation Mono", monospace;
   /* CSS 전용 아이콘(마스크) — 스프라이트를 못 쓰는 ::before 자리에서 사용 */
