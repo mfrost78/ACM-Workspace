@@ -189,8 +189,8 @@ async function syncCompletionStates(table, defs, isOff) {
   const cols = isOff ? 'id, category, tasks, join_date, leave_date' : 'id, category, tasks, join_date';
   const rows = await q(`SELECT ${cols} FROM ${table} WHERE state='완료'`);
   for (const r of rows) {
-    let tasks = tasksObj(r.tasks);
-    if (isOff) tasks = effectiveTasks(defs, 'off', r.category, tasks, r.join_date, r.leave_date);
+    const tasks = effectiveTasks(defs, isOff ? 'off' : 'on', r.category,
+      tasksObj(r.tasks), r.join_date, r.leave_date);
     const st = deriveState(defs, r.category, tasks);
     if (st !== '완료') await run(`UPDATE ${table} SET state=?, updated_at=now() WHERE id=?`, [st, r.id]);
   }
@@ -533,10 +533,13 @@ app.put('/api/onboarding/:id', requireAuth, wrap(async (req, res) => {
     if (!cur) return res.status(404).json({ error: '없음' });
     b.tasks = { ...tasksObj(cur.tasks), ...b.tasks };
     const cat = b.category ?? cur.category;
-    b.state = deriveState(ONBOARDING_TASKS, cat, b.tasks);
+    // 파생 '대상아님'(평가 미대상 → 연장계약서 발송)을 반영한 뒤 진행률·상태를 판정
+    const eff = effectiveTasks(ONBOARDING_TASKS, 'on', cat, b.tasks);
+    b.state = deriveState(ONBOARDING_TASKS, cat, eff);
     // 체크리스트가 이번 변경으로 100%에 도달하면 관리자에게 확정 대기 알림
-    const prOld = progress(ONBOARDING_TASKS, cur.category, tasksObj(cur.tasks));
-    if (prOld < 100 && progress(ONBOARDING_TASKS, cat, b.tasks) === 100) {
+    const effOld = effectiveTasks(ONBOARDING_TASKS, 'on', cur.category, tasksObj(cur.tasks));
+    const prOld = progress(ONBOARDING_TASKS, cur.category, effOld);
+    if (prOld < 100 && progress(ONBOARDING_TASKS, cat, eff) === 100) {
       bg(notifyAdminsReady('on', cur.name, req.user));
     }
   }

@@ -163,14 +163,28 @@ export function under1Year(joinDate, leaveDate) {
   return l < oneYearLater;
 }
 
-// 진행률/상태 계산용 보정 tasks — 퇴사자: 입사 1년 미만이면 퇴직금 항목을 '대상아님'으로 강제
-export function effectiveTasks(taskDefs, kind, category, tasks, joinDate, leaveDate) {
-  if (kind !== 'off') return tasks;
-  const out = { ...tasks };
-  const def = taskDefs.find(t => t.key === 'toejikgeum');
-  if (def && activeTasks(taskDefs, category).includes(def) && under1Year(joinDate, leaveDate)) {
-    out.toejikgeum = '대상아님';
+// 다른 항목의 값 때문에 자동으로 '대상아님'이 되는 항목들.
+// 담당자가 손으로 바꿀 수 없는 파생값이므로 진행률·상태 계산 전에 여기서 보정한다.
+//   입사자: 평가 미대상이면 평가에 딸린 '연장계약서 발송'도 대상이 아니다
+//   퇴사자: 입사 1년 미만이면 퇴직금이 발생하지 않는다
+export function derivedNA(taskDefs, kind, category, tasks, joinDate, leaveDate) {
+  const act = activeTasks(taskDefs, category);
+  const has = (key) => act.some(t => t.key === key);
+  const keys = [];
+  if (kind === 'on') {
+    if (tasks?.daesang === '미대상' && has('yeonjang_gyeyak')) keys.push('yeonjang_gyeyak');
+  } else {
+    if (has('toejikgeum') && under1Year(joinDate, leaveDate)) keys.push('toejikgeum');
   }
+  return keys;
+}
+
+// 진행률/상태 계산용 보정 tasks — derivedNA 항목을 '대상아님'으로 강제
+export function effectiveTasks(taskDefs, kind, category, tasks, joinDate, leaveDate) {
+  const na = derivedNA(taskDefs, kind, category, tasks, joinDate, leaveDate);
+  if (!na.length) return tasks;
+  const out = { ...tasks };
+  for (const k of na) out[k] = '대상아님';
   return out;
 }
 

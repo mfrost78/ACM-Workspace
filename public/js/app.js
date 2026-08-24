@@ -1,7 +1,7 @@
 import {
   CATEGORIES, OPTS, STATE_TONE, ONBOARDING_TASKS, OFFBOARDING_TASKS,
   activeTasks, computeDate, progress, defaultTasks, POSITIONS, FIELDS,
-  under1Year, effectiveTasks,
+  under1Year, effectiveTasks, derivedNA,
   TODO_STATUS, TODO_PRIORITY, PROJECT_CATEGORIES, TASK_SUBCATEGORIES, TASK_DESC,
   TODO_STATUS_TONE, PRIORITY_TONE, PRIORITY_ORDER, PRIORITY_COLOR, RECUR_FREQ, DOW_LABELS,
 } from './config.js';
@@ -585,7 +585,9 @@ async function viewDashboard(view) {
         ${upcoming.length ? `<div class="table-wrap"><table class="tbl"><thead><tr><th>구분</th><th>대상자</th><th>일자</th><th>유형</th><th>진행률</th></tr></thead><tbody>
           ${upcoming.map(x => {
             const defs = x.kind === 'in' ? ONBOARDING_TASKS : OFFBOARDING_TASKS;
-            const pr = progress(defs, x.category, parseTasks(x.tasks));
+            const eff = effectiveTasks(defs, x.kind === 'in' ? 'on' : 'off', x.category,
+              parseTasks(x.tasks), x.join_date, x.leave_date);
+            const pr = progress(defs, x.category, eff);
             return `<tr data-go="${x.kind}" data-id="${x.id}">
               <td><span class="pill ${x.kind === 'in' ? 'done' : 'todo'}">${x.kind === 'in' ? '입사' : '퇴사'}</span></td>
               <td class="t-strong">${esc(x.title || x.name)}</td>
@@ -702,11 +704,10 @@ function renderChecklist(kind, category, tasks, joinDate, leaveDate) {
   const defs = kind === 'on' ? ONBOARDING_TASKS : OFFBOARDING_TASKS;
   const act = activeTasks(defs, category);
   if (!act.length) return `<div class="empty t-muted">구분을 선택하면 해당 업무 항목이 표시됩니다.</div>`;
-  // 퇴사자: 입사 1년 미만이면 퇴직금 항목을 자동으로 '대상아님' 처리
-  if (kind === 'off') {
-    const eff = effectiveTasks(defs, 'off', category, tasks, joinDate, leaveDate);
-    if (eff.toejikgeum !== tasks.toejikgeum) tasks.toejikgeum = eff.toejikgeum;
-  }
+  // 다른 항목 때문에 자동으로 '대상아님'이 되는 항목(입사: 평가 미대상 → 연장계약서 / 퇴사: 1년 미만 → 퇴직금)
+  const naKeys = derivedNA(defs, kind, category, tasks, joinDate, leaveDate);
+  const naHint = { yeonjang_gyeyak: '평가 미대상 — 자동 대상아님', toejikgeum: '입사 1년 미만 — 자동 대상아님' };
+  for (const k of naKeys) tasks[k] = '대상아님';
   return `<div class="check-grid">${act.map(t => {
     const val = tasks?.[t.key] ?? '';
     if (t.type === 'autodate') {
@@ -729,10 +730,10 @@ function renderChecklist(kind, category, tasks, joinDate, leaveDate) {
     const cur = val || opts[0];
     // 현재값이 옵션 목록에 없으면(과거 데이터) 앞에 끼워 넣어 값 유실 방지
     const optList = opts.includes(cur) ? opts : [cur, ...opts];
-    const forcedNA = kind === 'off' && t.key === 'toejikgeum' && under1Year(joinDate, leaveDate);
+    const forcedNA = naKeys.includes(t.key);
     return `<div class="check-item"><div class="ci-label"${descAttr(t.key)}>${esc(t.label)} ${pillFor(cur)}</div>
       <select class="select" data-task="${t.key}" ${forcedNA ? 'disabled' : ''}>${optList.map(o => `<option ${o === cur ? 'selected' : ''}>${o}</option>`).join('')}</select>
-      ${forcedNA ? `<div class="ci-hint" style="margin-top:4px">입사 1년 미만 — 자동 대상아님</div>` : ''}</div>`;
+      ${forcedNA ? `<div class="ci-hint" style="margin-top:4px">${naHint[t.key] || '자동 대상아님'}</div>` : ''}</div>`;
   }).join('')}</div>`;
 }
 function pillFor(v) { const tone = STATE_TONE[v] || 'na'; return `<span class="pill ${tone}" style="margin-left:auto">${esc(v)}</span>`; }
@@ -931,7 +932,7 @@ function listToAoa(kind, rows, defs) {
   const aoa = [head];
   for (const r of rows) {
     const tasks = parseTasks(r.tasks);
-    const eff = isOn ? tasks : effectiveTasks(defs, 'off', r.category, tasks, r.join_date, r.leave_date);
+    const eff = effectiveTasks(defs, isOn ? 'on' : 'off', r.category, tasks, r.join_date, r.leave_date);
     const pr = progress(defs, r.category, eff);
     const active = activeTasks(defs, r.category);
     const evalNA = tasks.daesang === '미대상';
@@ -946,8 +947,7 @@ function listToAoa(kind, rows, defs) {
         row.push(hideEval ? '' : (computeDate(t.calc, r.join_date) || ''));
         continue;
       }
-      if (!isOn && t.key === 'toejikgeum' && under1Year(r.join_date, r.leave_date)) { row.push('대상아님'); continue; }
-      row.push(tasks[t.key] ?? '');
+      row.push(eff[t.key] ?? '');   // 파생 '대상아님'을 반영해 화면과 같은 값을 내보낸다
     }
     aoa.push(row);
   }
@@ -1051,7 +1051,7 @@ async function listView(view, kind) {
     // 진행률 100%인데 아직 확정(완료) 전인 행 수 — 확정 누락 방지 안내
     const rowPr = (r) => {
       const tasks = parseTasks(r.tasks);
-      const eff = isOn ? tasks : effectiveTasks(defs, 'off', r.category, tasks, r.join_date, r.leave_date);
+      const eff = effectiveTasks(defs, isOn ? 'on' : 'off', r.category, tasks, r.join_date, r.leave_date);
       return progress(defs, r.category, eff);
     };
     const waitCount = filtered.filter(r => r.state !== '완료' && rowPr(r) === 100).length;
@@ -1064,7 +1064,7 @@ async function listView(view, kind) {
         return filtered.some(r => {
           if (!activeTasks(defs, r.category).includes(t)) return false;
           const tasks = parseTasks(r.tasks);
-          const eff = isOn ? tasks : effectiveTasks(defs, 'off', r.category, tasks, r.join_date, r.leave_date);
+          const eff = effectiveTasks(defs, isOn ? 'on' : 'off', r.category, tasks, r.join_date, r.leave_date);
           const v = eff[t.key];
           if (t.type === 'amount') return v === undefined || v === null || String(v) === '';
           if (t.type === 'date') return !v;
@@ -1089,10 +1089,11 @@ async function listView(view, kind) {
         </tr></thead><tbody>
         ${filtered.length ? filtered.map(r => {
           const tasks = parseTasks(r.tasks);
-          const eff = isOn ? tasks : effectiveTasks(defs, 'off', r.category, tasks, r.join_date, r.leave_date);
+          const eff = effectiveTasks(defs, isOn ? 'on' : 'off', r.category, tasks, r.join_date, r.leave_date);
           const pr = progress(defs, r.category, eff);
           const active = activeTasks(defs, r.category);
           const evalNA = tasks.daesang === '미대상';
+          const naKeys = derivedNA(defs, isOn ? 'on' : 'off', r.category, tasks, r.join_date, r.leave_date);
           const waiting = r.state !== '완료' && pr === 100;
           return `<tr data-id="${r.id}">
             <td class="sticky-col sel-col"><input type="checkbox" class="rowSel" data-id="${r.id}" ${selected.has(r.id) ? 'checked' : ''}></td>
@@ -1110,8 +1111,7 @@ async function listView(view, kind) {
                 const hideEval = evalNA && (t.key === 'pyeongga_yejeong' || t.key === 'pyeongga_gyobu');
                 return `<td class="cell-na">${hideEval ? '—' : (esc(computeDate(t.calc, r.join_date)) || '—')}</td>`;
               }
-              const forcedNA = !isOn && t.key === 'toejikgeum' && under1Year(r.join_date, r.leave_date);
-              if (forcedNA) return `<td class="cell-na">대상아님</td>`;
+              if (naKeys.includes(t.key)) return `<td class="cell-na">대상아님</td>`;
               if (t.type === 'date') return `<td><input type="date" class="cell-input" data-id="${r.id}" data-task="${t.key}" value="${esc(tasks[t.key] || '')}"></td>`;
               if (t.type === 'amount') return `<td><input type="text" class="cell-input" placeholder="금액/내용" data-id="${r.id}" data-task="${t.key}" value="${esc(tasks[t.key] ?? '')}"></td>`;
               const base = OPTS[t.opts] || [];
