@@ -7,8 +7,11 @@ import {
 } from './config.js';
 import { $, esc, todayStr, ymd, parseTasks, fmtTs, safeUrl, b64, ub64, downloadCSV } from './utils.js';
 
-// 체크리스트 항목 설명 툴팁(ⓘ) — 설명이 있는 항목에만 표시
-function descIcon(key) { const d = TASK_DESC[key]; return d ? ` <i class="info-dot" title="${esc(d)}">ⓘ</i>` : ''; }
+// 아이콘 — index.html 의 SVG 스프라이트 참조. size: '' | 'sm' | 'lg'
+function icon(name, size = '') { return `<svg class="ic-svg ${size}" aria-hidden="true"><use href="#i-${name}"/></svg>`; }
+
+// 체크리스트 항목 설명 — ⓘ 글리프 대신 라벨 자체에 툴팁을 건다(별도 표식 없음)
+function descAttr(key) { const d = TASK_DESC[key]; return d ? ` title="${esc(d)}"` : ''; }
 
 /* ============ 유틸 ============ */
 const app = $('#app');
@@ -66,7 +69,8 @@ document.addEventListener('focusin', e => {
 });
 
 /* ============ 상태 ============ */
-const state = { user: null, route: 'dashboard', theme: localStorage.getItem('theme') || 'light' };
+const state = { user: null, route: 'dashboard', theme: localStorage.getItem('theme') || 'light',
+                rail: localStorage.getItem('ws_rail') === '1' };
 function applyTheme() { document.documentElement.dataset.theme = state.theme; }
 function toggleTheme() { state.theme = state.theme === 'light' ? 'dark' : 'light'; localStorage.setItem('theme', state.theme); applyTheme(); render(); }
 applyTheme();
@@ -97,10 +101,10 @@ async function afterAuth() {
 /* ============ 최초 사용자 가이드 투어 ============ */
 const TOUR_KEY = 'hrws_tour_done';
 const TOUR_STEPS = [
-  { sel: '#brandHome', title: '환영합니다 👋', body: '좌상단 Workspace 로고를 누르면 언제든 대시보드로 돌아옵니다. 대시보드에서 진행중·지연·내 업무와 금주 일정을 한눈에 봅니다.' },
-  { sel: '[data-route="todo"]', title: '업무 보드', body: '프로젝트 → 업무 → 세부 To-Do 순서로 일을 관리합니다. 상단 ＋업무 또는 빠른 추가(⚡)로 등록하고, 마감이 가까우면 D-day 배지로 알려줍니다.' },
-  { sel: '#nav .nav-group', title: '입·퇴사 관리', body: '입사자·퇴사자 체크리스트로 처리 항목을 빠짐없이 관리합니다. 항목 옆 ⓘ에 마우스를 올리면 설명이 나옵니다.' },
-  { sel: '#btnNotif', title: '알림과 설정', body: '🔔 알림에서 업무 배정·마감 임박을 확인하고, ⚙️ 설정에서 비밀번호·항목·데이터 백업을 관리합니다.' },
+  { sel: '#brandHome', title: '환영합니다', body: '좌상단 Workspace 로고를 누르면 언제든 대시보드로 돌아옵니다. 대시보드에서 진행중·지연·내 업무와 금주 일정을 한눈에 봅니다.' },
+  { sel: '[data-route="todo"]', title: '업무 보드', body: '프로젝트 → 업무 → 세부 To-Do 순서로 일을 관리합니다. 상단 ＋업무 또는 빠른 추가로 등록하고, 마감이 가까우면 D-day 배지로 알려줍니다.' },
+  { sel: '[data-route="onboarding"]', title: '입·퇴사 관리', body: '입사자·퇴사자 체크리스트로 처리 항목을 빠짐없이 관리합니다. 항목 이름에 마우스를 올리면 설명이 나옵니다.' },
+  { sel: '#btnNotif', title: '알림과 설정', body: '알림에서 업무 배정·마감 임박을 확인하고, 설정에서 비밀번호·항목·데이터 백업을 관리합니다.' },
 ];
 function maybeStartTour() {
   try {
@@ -148,7 +152,7 @@ function renderForcePwChange() {
   app.innerHTML = `
   <div class="login-wrap">
     <form class="login-card" id="fpwForm">
-      <div class="login-logo">🔐</div>
+      <div class="login-logo">${icon('lock','lg')}</div>
       <h1>비밀번호 변경</h1>
       <p class="sub">보안을 위해 최초 로그인 시<br>기본 비밀번호를 반드시 변경해야 합니다.</p>
       <div class="field"><label>현재 비밀번호</label><input class="input" name="current" type="password" autocomplete="current-password" required></div>
@@ -176,7 +180,7 @@ function renderLogin() {
   app.innerHTML = `
   <div class="login-wrap">
     <form class="login-card" id="loginForm">
-      <div class="login-logo">🧭</div>
+      <div class="login-logo">${icon('grid','lg')}</div>
       <h1>Workspace</h1>
       <p class="sub">경영지원 업무 관리</p>
       <div class="field"><label>아이디</label><input class="input" name="username" autocomplete="username" autofocus required></div>
@@ -195,37 +199,32 @@ function renderLogin() {
 }
 
 /* ============ 셸 / 네비 ============
-   주 기능은 업무 관리 — 업무 보드를 앞쪽에 배치, 입퇴사는 보조(드롭다운 그룹)로 묶음 */
+   좌측 사이드바. 그룹은 드롭다운이 아니라 섹션 제목이라 9개 화면이 모두 한눈에 보인다.
+   ≥1025 펼침 / 768~1024 아이콘 레일 / ≤767 햄버거 드로어 (CSS 에서 처리) */
 const NAV = [
-  { id: 'todo', ic: '🗂️', label: '업무 보드', badgeKey: 'myTaskOpen' },
-  { id: 'calendar', ic: '📅', label: '캘린더' },
-  { id: 'annual', ic: '📋', label: '연간 계획' },
-  { group: '입퇴사', ic: '🔄', items: [
-    { id: 'onboarding', ic: '📥', label: '입사자 관리', badgeKey: 'onbOpen' },
-    { id: 'offboarding', ic: '📤', label: '퇴사자 관리', badgeKey: 'ofbOpen', dualBadge: ['ofbThisMonth', 'ofbOpen'] },
-  ] },
-  { group: '데이터', ic: '📊', items: [
-    { id: 'employees', ic: '👥', label: '재직자 현황' },
-    { id: 'activity', ic: '🕑', label: '활동 기록' },
-  ] },
-  { id: 'users', ic: '🔑', label: '사용자 관리', adminOnly: true },
+  { id: 'dashboard', ic: 'grid', label: '대시보드' },
+  { sec: '업무' },
+  { id: 'todo', ic: 'board', label: '업무 보드', badgeKey: 'myTaskOpen' },
+  { id: 'calendar', ic: 'calendar', label: '캘린더' },
+  { id: 'annual', ic: 'annual', label: '연간 계획' },
+  { sec: '입퇴사' },
+  { id: 'onboarding', ic: 'in', label: '입사자 관리', badgeKey: 'onbOpen' },
+  { id: 'offboarding', ic: 'out', label: '퇴사자 관리', badgeKey: 'ofbOpen', dualBadge: ['ofbThisMonth', 'ofbOpen'] },
+  { sec: '데이터' },
+  { id: 'employees', ic: 'people', label: '재직자 현황' },
+  { id: 'activity', ic: 'clock', label: '활동 기록' },
+  { id: 'users', ic: 'key', label: '사용자 관리', adminOnly: true },
 ];
 
-// id로 NAV 항목(그룹 하위 포함) 정의 찾기
-function findNavItem(id) {
-  for (const n of NAV) {
-    if (n.id === id) return n;
-    if (n.items) { const c = n.items.find(it => it.id === id); if (c) return c; }
-  }
-  return null;
-}
+// id로 NAV 항목 정의 찾기
+function findNavItem(id) { return NAV.find(n => n.id === id) || null; }
 // 버튼에 카운트 배지 부여/갱신/제거 (caret 앞에 삽입)
 function setNavBadge(btn, val) {
   let badge = btn.querySelector(':scope > .badge');
   if (val) {
     if (!badge) {
       badge = document.createElement('span'); badge.className = 'badge';
-      btn.insertBefore(badge, btn.querySelector('.caret') || null);
+      btn.appendChild(badge);
     }
     badge.textContent = val;
   } else if (badge) badge.remove();
@@ -234,41 +233,18 @@ function setNavBadge(btn, val) {
 // 사용자 색상 선택용 추천 팔레트
 const USER_COLORS = ['#0071e3', '#34c759', '#ff9500', '#ff3b30', '#af52de', '#5856d6', '#00b8d9', '#8e8e93'];
 
-// 단일 항목 버튼
-function navItemHtml(n) {
-  return `<button class="nav-item ${state.route === n.id ? 'active' : ''}" data-route="${n.id}">
-    <span class="ic">${n.ic}</span><span class="lbl">${esc(n.label)}</span>
-    ${n.badgeKey && dash[n.badgeKey] ? `<span class="badge">${dash[n.badgeKey]}</span>` : ''}
-  </button>`;
-}
-// 전체 네비 HTML (그룹은 드롭다운)
+// 사이드바 HTML — 섹션 제목 + 항목
 function navHtml(u) {
   return NAV.filter(n => !n.adminOnly || u.role === 'admin').map(n => {
-    if (!n.group) return navItemHtml(n);
-    const items = n.items.filter(it => !it.adminOnly || u.role === 'admin');
-    const activeChild = items.some(it => it.id === state.route);
-    const sum = items.reduce((a, it) => a + (it.badgeKey ? (dash[it.badgeKey] || 0) : 0), 0);
-    return `<div class="nav-group ${activeChild ? 'has-active' : ''}" data-group="${esc(n.group)}">
-      <button class="nav-item nav-toggle ${activeChild ? 'active' : ''}" data-toggle>
-        <span class="ic">${n.ic}</span><span class="lbl">${esc(n.group)}</span>
-        ${sum ? `<span class="badge">${sum}</span>` : ''}
-        <span class="caret">▾</span>
-      </button>
-      <div class="nav-menu">
-        ${items.map(it => `<button class="nav-menu-item ${state.route === it.id ? 'active' : ''}" data-route="${it.id}">
-          <span class="ic">${it.ic}</span><span class="lbl">${esc(it.label)}</span>
-          ${it.dualBadge ? `<span class="badge badge-dual" title="이달 퇴사자 / 진행중 퇴사자">${dash[it.dualBadge[0]] ?? 0} / ${dash[it.dualBadge[1]] ?? 0}</span>`
-            : (it.badgeKey && dash[it.badgeKey] ? `<span class="badge">${dash[it.badgeKey]}</span>` : '')}
-        </button>`).join('')}
-      </div>
-    </div>`;
+    if (n.sec) return `<div class="nav-sec">${esc(n.sec)}</div>`;
+    const badge = n.dualBadge
+      ? `<span class="badge badge-dual" title="이달 퇴사자 / 진행중 퇴사자">${dash[n.dualBadge[0]] ?? 0} / ${dash[n.dualBadge[1]] ?? 0}</span>`
+      : (n.badgeKey && dash[n.badgeKey] ? `<span class="badge">${dash[n.badgeKey]}</span>` : '');
+    return `<button class="nav-item ${state.route === n.id ? 'active' : ''}" data-route="${n.id}" title="${esc(n.label)}">
+      <span class="ic">${icon(n.ic)}</span><span class="lbl">${esc(n.label)}</span>${badge}
+    </button>`;
   }).join('');
 }
-// 바깥 클릭 시 열린 드롭다운 닫기 (전역 1회)
-document.addEventListener('click', e => {
-  if (e.target.closest('.nav-group')) return;
-  document.querySelectorAll('.nav-group.open').forEach(g => g.classList.remove('open'));
-});
 
 let dash = {};
 async function render() {
@@ -276,38 +252,58 @@ async function render() {
   const u = state.user;
   const initial = (u.name || u.username || '?').slice(0, 1);
   app.innerHTML = `
-  <div class="shell">
+  <div class="shell${state.rail ? ' rail' : ''}" id="shell">
     <header class="topnav" id="topnav">
-      <button class="brand ${state.route === 'dashboard' ? 'active' : ''}" id="brandHome" title="대시보드"><span class="logo">🧭</span><span class="name">Workspace</span></button>
-      <nav class="nav" id="nav">${navHtml(u)}</nav>
+      <button class="icon-btn burger" id="btnMenu" title="메뉴" aria-label="메뉴 열기"
+              aria-expanded="false" aria-controls="nav">${icon('menu')}</button>
+      <button class="brand ${state.route === 'dashboard' ? 'active' : ''}" id="brandHome" title="대시보드">
+        <span class="logo">W</span><span class="name">Workspace</span></button>
+      <div class="gsearch">${icon('search', 'ic')}<input id="gSearch" placeholder="업무·직원 검색" autocomplete="off"></div>
       <div class="topnav-right">
         <div class="user-chip">
           <div class="avatar" style="background:${esc(u.color || 'var(--accent)')}">${esc(initial)}</div>
           <div class="meta"><b>${esc(u.name)}</b><span>${esc(u.username)} · ${u.role === 'admin' ? '관리자' : '담당자'}</span></div>
         </div>
-        <button class="icon-btn notif-btn" id="btnNotif" title="알림">🔔<span class="notif-dot" id="notifDot" hidden></span></button>
-        <button class="icon-btn" id="btnSettings" title="설정">⚙️</button>
-        <button class="icon-btn" id="btnLogout" title="로그아웃">🚪</button>
+        <button class="icon-btn notif-btn" id="btnNotif" title="알림">${icon('bell')}<span class="notif-dot" id="notifDot" hidden></span></button>
+        <button class="icon-btn" id="btnSettings" title="설정">${icon('settings')}</button>
+        <button class="icon-btn" id="btnLogout" title="로그아웃">${icon('logout')}</button>
       </div>
     </header>
-    <main class="main" id="view"></main>
+    <div class="layout">
+      <div class="scrim" id="scrim"></div>
+      <nav class="nav" id="nav">
+        <div class="nav-search"><input id="gSearchM" placeholder="업무·직원 검색" autocomplete="off"></div>
+        ${navHtml(u)}
+        <div class="nav-spacer"></div>
+        <button class="nav-collapse" id="btnRail" title="사이드바 접기">
+          <span class="ic">${icon('chev-left')}</span><span class="lbl">사이드바 접기</span></button>
+      </nav>
+      <main class="main" id="view"></main>
+    </div>
   </div>`;
 
-  const navEl = $('#nav');
+  const shellEl = $('#shell'), navEl = $('#nav'), btnMenu = $('#btnMenu');
+  const closeDrawer = () => { shellEl.classList.remove('drawer'); btnMenu.setAttribute('aria-expanded', 'false'); };
   navEl.addEventListener('click', e => {
-    const tog = e.target.closest('[data-toggle]');
-    if (tog) {
-      const grp = tog.closest('.nav-group');
-      const wasOpen = grp.classList.contains('open');
-      navEl.querySelectorAll('.nav-group.open').forEach(g => g.classList.remove('open'));
-      if (!wasOpen) grp.classList.add('open');
-      e.stopPropagation();
-      return;
-    }
     const b = e.target.closest('[data-route]');
-    if (b) { state.route = b.dataset.route; render(); }
+    if (b) { state.route = b.dataset.route; closeDrawer(); render(); }
   });
-  $('#brandHome').addEventListener('click', () => { state.route = 'dashboard'; render(); });
+  btnMenu.addEventListener('click', () => {
+    const open = !shellEl.classList.contains('drawer');
+    shellEl.classList.toggle('drawer', open);
+    btnMenu.setAttribute('aria-expanded', open ? 'true' : 'false');
+    if (open) navEl.querySelector('.nav-search input')?.focus();
+  });
+  $('#scrim').addEventListener('click', closeDrawer);
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape' && shellEl.classList.contains('drawer')) { closeDrawer(); btnMenu.focus(); }
+  });
+  $('#btnRail').addEventListener('click', () => {
+    state.rail = !state.rail;
+    shellEl.classList.toggle('rail', state.rail);
+    localStorage.setItem('ws_rail', state.rail ? '1' : '0');
+  });
+  $('#brandHome').addEventListener('click', () => { state.route = 'dashboard'; closeDrawer(); render(); });
   $('#btnLogout').addEventListener('click', async () => { await api('POST', '/auth/logout'); state.user = null; stopNotifPoll(); renderLogin(); });
   $('#btnSettings').addEventListener('click', openSettings);
   $('#btnNotif').addEventListener('click', openNotifPanel);
@@ -355,14 +351,6 @@ async function refreshBadges() {
         setNavBadge(btn, dash[def.badgeKey]);
       }
     });
-    // 그룹 토글 버튼 — 하위 배지 합산
-    document.querySelectorAll('#nav .nav-group').forEach(grp => {
-      const g = NAV.find(n => n.group === grp.dataset.group);
-      if (!g) return;
-      const sum = g.items.reduce((a, it) => a + (it.badgeKey ? (dash[it.badgeKey] || 0) : 0), 0);
-      const tog = grp.querySelector('.nav-toggle');
-      if (tog) setNavBadge(tog, sum);
-    });
   } catch { /* 무시 */ }
 }
 
@@ -379,7 +367,7 @@ async function loadNotifCount() {
     // 새 알림 도착 시 토스트 (최초 로드는 제외)
     if (lastUnread !== null && d.unread > lastUnread) {
       const latest = (d.items || []).find(n => !n.read);
-      toast(`🔔 ${latest ? latest.title : `새 알림 ${d.unread - lastUnread}건`}`);
+      toast(latest ? latest.title : `새 알림 ${d.unread - lastUnread}건`);
     }
     lastUnread = d.unread;
     const dot = document.getElementById('notifDot');
@@ -441,23 +429,11 @@ async function openNotifPanel() {
   }));
 }
 
-// 화면별 한 줄 목적 문구 — 처음 쓰는 사람이 "이 화면이 무엇을 위한 곳인지" 즉시 파악
-const PURPOSE = {
-  dashboard: '오늘의 업무 현황과 금주 일정을 한눈에 봅니다.',
-  todo: '프로젝트·업무·세부 To-Do로 팀 업무를 등록하고 진행을 추적합니다.',
-  calendar: '입·퇴사, 평가, 업무 목표일을 달력에서 확인합니다.',
-  annual: '정기(반복) 업무의 연간 이행 현황과 예정 일정을 한눈에 봅니다. 예약된 업무는 시기가 되면 업무 보드에 자동 합류합니다.',
-  onboarding: '신규 입사자의 처리 항목을 체크리스트로 빠짐없이 관리합니다.',
-  offboarding: '퇴사자의 정산·해지 항목을 체크리스트로 빠짐없이 관리합니다.',
-  employees: '재직·휴직·퇴직 인원 현황을 조회하고 관리합니다.',
-  activity: '시스템에서 일어난 주요 변경 이력을 확인합니다.',
-  users: '사용자 계정과 권한(관리자/담당자)을 관리합니다.',
-};
+// 화면별 목적 문구는 상단 배너로 띄우지 않고 사이드바 항목 title 툴팁으로만 남긴다
+// (매 화면 반복되는 안내 배너는 공간만 차지하고 곧 읽히지 않음)
 function topbar(title, rightHtml = '') {
-  const hint = PURPOSE[state.route];
   return `<div class="topbar"><h2>${title}</h2><div class="spacer"></div>${rightHtml}
-    <button class="icon-btn" id="themeBtn" title="테마 전환">${state.theme === 'light' ? '🌙' : '☀️'}</button></div>
-    ${hint ? `<div class="view-hint">💡 ${esc(hint)}</div>` : ''}`;
+    <button class="icon-btn" id="themeBtn" title="테마 전환">${state.theme === 'light' ? icon('moon') : icon('sun')}</button></div>`;
 }
 function wireTopbar(root) { const b = $('#themeBtn', root); if (b) b.addEventListener('click', toggleTheme); }
 
@@ -519,7 +495,7 @@ async function viewDashboard(view) {
     ]);
   } catch (e) {
     const body = $('#dashBody', view);
-    if (body) body.innerHTML = `<div class="empty"><div class="big">⚠️</div>데이터를 불러오지 못했습니다.<br><span class="t-muted">${esc(e.message)}</span><br><button class="btn btn-sm mt8" id="dashRetry">다시 시도</button></div>`;
+    if (body) body.innerHTML = `<div class="empty"><div class="big">${icon('alert','lg')}</div>데이터를 불러오지 못했습니다.<br><span class="t-muted">${esc(e.message)}</span><br><button class="btn btn-sm mt8" id="dashRetry">다시 시도</button></div>`;
     const r = $('#dashRetry', view); if (r) r.addEventListener('click', () => viewDashboard(view));
     return;
   }
@@ -543,35 +519,35 @@ async function viewDashboard(view) {
     const feed = dashFeedMine ? feedAll.filter(f => f.mine) : feedAll;
     $('#dashBody', view).innerHTML = `
     <div class="stat-grid stat-grid-4">
-      <div class="stat" data-goroute="todo"><div class="label">진행중 업무</div><div class="value">${dash.taskOpen ?? 0}<small> 건</small></div></div>
-      <div class="stat" data-goroute="todo" data-overdue="1"><div class="label">지연 업무</div><div class="value" style="color:var(--red)">${dash.taskOverdue ?? 0}<small> 건</small></div></div>
-      <div class="stat" data-goroute="todo" data-mine="1"><div class="label">내 업무</div><div class="value" style="color:var(--accent)">${dash.myTaskOpen ?? 0}<small> 건</small></div></div>
+      <div class="stat is-key" data-goroute="todo"><div class="label">진행중 업무</div><div class="value">${dash.taskOpen ?? 0}<small> 건</small></div></div>
+      <div class="stat${(dash.taskOverdue ?? 0) > 0 ? ' is-alert' : ''}" data-goroute="todo" data-overdue="1"><div class="label">지연 업무</div><div class="value">${dash.taskOverdue ?? 0}<small> 건</small></div></div>
+      <div class="stat" data-goroute="todo" data-mine="1"><div class="label">내 업무</div><div class="value">${dash.myTaskOpen ?? 0}<small> 건</small></div></div>
       <div class="stat stat-split">
-        <div class="ss-part" data-go="in"><div class="label">진행중 입사</div><div class="value" style="color:var(--orange)">${dash.onbOpen ?? 0}<small> 건</small></div></div>
+        <div class="ss-part" data-go="in"><div class="label">진행중 입사</div><div class="value">${dash.onbOpen ?? 0}<small> 건</small></div></div>
         <div class="ss-div"></div>
-        <div class="ss-part" data-go="out"><div class="label">진행중 퇴사</div><div class="value" style="color:var(--orange)">${dash.ofbOpen ?? 0}<small> 건</small></div></div>
+        <div class="ss-part" data-go="out"><div class="label">진행중 퇴사</div><div class="value">${dash.ofbOpen ?? 0}<small> 건</small></div></div>
       </div>
     </div>
     <div class="card wk-card">
-      <div class="card-head"><h3>📆 금주 일정</h3><span class="t-muted" style="font-size:12px">${ymd(wkDays[0])} ~ ${ymd(wkDays[6])}</span><div class="spacer"></div>
+      <div class="card-head"><h3>${icon('calendar','sm')} 금주 일정</h3><span class="t-muted" style="font-size:12px">${ymd(wkDays[0])} ~ ${ymd(wkDays[6])}</span><div class="spacer"></div>
         <label class="tgl"><input type="checkbox" id="wkMine" ${dashWkMine ? 'checked' : ''}><span class="tgl-track"></span>${dashWkMine ? '내 일정' : '전체 일정'}</label></div>
       <div class="card-body" id="wkStripBody">${weekStrip(byDate, wkDays, tk)}</div>
     </div>
     <div class="dash-cols dash-grid2">
       <div class="card">
-        <div class="card-head"><h3>⚠️ 지연 업무</h3></div>
+        <div class="card-head"><h3>${icon('alert','sm')} 지연 업무</h3></div>
         <div class="card-body dash-tasks">
-          ${(dash.overdueTasks || []).length ? dash.overdueTasks.map(taskMini).join('') : `<div class="empty" style="padding:24px">지연 업무가 없습니다 👍</div>`}
+          ${(dash.overdueTasks || []).length ? dash.overdueTasks.map(taskMini).join('') : `<div class="empty" style="padding:24px">지연 업무가 없습니다</div>`}
         </div>
       </div>
       <div class="card">
-        <div class="card-head"><h3>📅 마감 임박 (7일 이내)</h3></div>
+        <div class="card-head"><h3>${icon('clock','sm')} 마감 임박 (7일 이내)</h3></div>
         <div class="card-body dash-tasks">
           ${(dash.dueSoonTasks || []).length ? dash.dueSoonTasks.map(taskMini).join('') : `<div class="empty" style="padding:24px">임박한 마감이 없습니다.</div>`}
         </div>
       </div>
       <div class="card">
-        <div class="card-head"><h3>👥 팀 업무 현황</h3></div>
+        <div class="card-head"><h3>${icon('people','sm')} 팀 업무 현황</h3></div>
         <div class="card-body dash-team-wrap">
           <div class="donut-box">
             ${donutSvg(prio, dash.taskOpen ?? 0)}
@@ -588,12 +564,12 @@ async function viewDashboard(view) {
         </div>
       </div>
       <div class="card">
-        <div class="card-head"><h3>💬 최근 업무 업데이트</h3><div class="spacer"></div>
+        <div class="card-head"><h3>${icon('chat','sm')} 최근 업무 업데이트</h3><div class="spacer"></div>
           <label class="chk-inline"><input type="checkbox" id="feedMine" ${dashFeedMine ? 'checked' : ''}> 내 업무만</label></div>
         <div class="card-body dash-feed">
           ${feed.length ? feed.map(f => `
             <div class="feed-item" data-opentask="${f.task_id}">
-              <span class="feed-ic">${f.kind === 'done' ? '✅' : '💬'}</span>
+              <span class="feed-ic">${f.kind === 'done' ? icon('check-circle','sm') : icon('chat','sm')}</span>
               <div class="feed-main">
                 <div class="feed-title">${esc(f.title || '(삭제된 업무)')}</div>
                 <div class="feed-text t-muted">${esc(f.text)}</div>
@@ -616,7 +592,7 @@ async function viewDashboard(view) {
               <td>${esc(x.date)}</td><td class="t-muted">${esc(x.category)}</td>
               <td>${progBar(pr)}</td></tr>`;
           }).join('')}
-        </tbody></table></div>` : `<div class="empty"><div class="big">📭</div>예정된 입·퇴사가 없습니다.</div>`}
+        </tbody></table></div>` : `<div class="empty"><div class="big">${icon('inbox','lg')}</div>예정된 입·퇴사가 없습니다.</div>`}
       </div>
     </div>`;
     $('#feedMine', view)?.addEventListener('change', e => { dashFeedMine = e.target.checked; draw(); });
@@ -737,16 +713,16 @@ function renderChecklist(kind, category, tasks, joinDate, leaveDate) {
       const hideEval = tasks?.daesang === '미대상' && (t.key === 'pyeongga_yejeong' || t.key === 'pyeongga_gyobu');
       if (hideEval) return '';
       const auto = computeDate(t.calc, joinDate);
-      return `<div class="check-item"><div class="ci-label">${esc(t.label)}${descIcon(t.key)}<span class="ci-hint">${esc(t.hint || '')}</span></div>
+      return `<div class="check-item"><div class="ci-label"${descAttr(t.key)}>${esc(t.label)}<span class="ci-hint">${esc(t.hint || '')}</span></div>
         <div class="ci-auto">${auto || '—'}</div></div>`;
     }
     if (t.type === 'date') {
-      return `<div class="check-item"><div class="ci-label">${esc(t.label)}${descIcon(t.key)}</div>
+      return `<div class="check-item"><div class="ci-label"${descAttr(t.key)}>${esc(t.label)}</div>
         <input class="input" type="date" data-task="${t.key}" value="${esc(val)}"></div>`;
     }
     if (t.type === 'amount') {
       const done = val !== undefined && val !== null && val !== '';
-      return `<div class="check-item"><div class="ci-label">${esc(t.label)}${descIcon(t.key)} <span class="pill ${done ? 'done' : 'todo'}" style="margin-left:auto">${done ? '완료' : '미완료'}</span></div>
+      return `<div class="check-item"><div class="ci-label"${descAttr(t.key)}>${esc(t.label)} <span class="pill ${done ? 'done' : 'todo'}" style="margin-left:auto">${done ? '완료' : '미완료'}</span></div>
         <input class="input" type="text" placeholder="금액 또는 내용" data-task="${t.key}" value="${esc(val)}"></div>`;
     }
     const opts = OPTS[t.opts];
@@ -754,7 +730,7 @@ function renderChecklist(kind, category, tasks, joinDate, leaveDate) {
     // 현재값이 옵션 목록에 없으면(과거 데이터) 앞에 끼워 넣어 값 유실 방지
     const optList = opts.includes(cur) ? opts : [cur, ...opts];
     const forcedNA = kind === 'off' && t.key === 'toejikgeum' && under1Year(joinDate, leaveDate);
-    return `<div class="check-item"><div class="ci-label">${esc(t.label)}${descIcon(t.key)} ${pillFor(cur)}</div>
+    return `<div class="check-item"><div class="ci-label"${descAttr(t.key)}>${esc(t.label)} ${pillFor(cur)}</div>
       <select class="select" data-task="${t.key}" ${forcedNA ? 'disabled' : ''}>${optList.map(o => `<option ${o === cur ? 'selected' : ''}>${o}</option>`).join('')}</select>
       ${forcedNA ? `<div class="ci-hint" style="margin-top:4px">입사 1년 미만 — 자동 대상아님</div>` : ''}</div>`;
   }).join('')}</div>`;
@@ -1011,7 +987,7 @@ async function listView(view, kind) {
       <div class="search"><input class="input" id="q" placeholder="이름·사번 검색" value=""></div>
       <button class="btn btn-sm btn-danger" id="bulkDel" disabled>선택 삭제</button>
       <div class="spacer"></div><span class="t-muted" id="rowCount"></span>
-      <button class="btn btn-sm" id="btnExcel" title="엑셀(CSV) 내려받기">⬇ 엑셀</button>
+      <button class="btn btn-sm" id="btnExcel" title="엑셀(CSV) 내려받기">${icon('download','sm')} 엑셀</button>
     </div>
     <div class="toolbar">
       <select class="select" id="fTaskKey" style="width:auto">
@@ -1100,7 +1076,7 @@ async function listView(view, kind) {
 
     const colCount = 1 + (2 + (isOn ? 0 : 2)) + 1 + visDefs.length + 3;   // +메모, +입사일(퇴사)
     resultEl.innerHTML = `
-      ${waitCount ? `<div class="view-hint">⏳ 체크리스트 완료 — <b>${isOn ? '입사' : '퇴사'} 확정 대기 ${waitCount}건</b>. 이름을 눌러 상세에서 확정하세요.</div>` : ''}
+      ${waitCount ? `<div class="view-hint">${icon('hourglass','sm')} 체크리스트 완료 — <b>${isOn ? '입사' : '퇴사'} 확정 대기 ${waitCount}건</b>. 이름을 눌러 상세에서 확정하세요.</div>` : ''}
       <div class="card"><div class="card-body"><div class="table-wrap">
         <table class="tbl xls-tbl"><thead><tr>
           <th class="sticky-col sel-col"><input type="checkbox" id="selAll" ${filtered.length && filtered.every(r => selected.has(r.id)) ? 'checked' : ''}></th>
@@ -1109,7 +1085,7 @@ async function listView(view, kind) {
           <th>구분</th>${!isOn ? '<th>입사일</th>' : ''}<th>${isOn ? '입사일' : '퇴사예정일'}</th>
           ${isOn ? '' : '<th>사직원접수</th>'}
           <th>메모</th>
-          ${visDefs.map(t => `<th title="${esc(TASK_DESC[t.key] || t.label)}">${esc(t.label)}${TASK_DESC[t.key] ? ' ⓘ' : ''}</th>`).join('')}
+          ${visDefs.map(t => `<th title="${esc(TASK_DESC[t.key] || t.label)}">${esc(t.label)}</th>`).join('')}
         </tr></thead><tbody>
         ${filtered.length ? filtered.map(r => {
           const tasks = parseTasks(r.tasks);
@@ -1145,7 +1121,7 @@ async function listView(view, kind) {
               return `<td><select class="cell-select tone-${tone}" data-id="${r.id}" data-task="${t.key}">${optList.map(o => `<option ${o === cur ? 'selected' : ''}>${esc(o)}</option>`).join('')}</select></td>`;
             }).join('')}
           </tr>`;
-        }).join('') : `<tr><td colspan="${colCount}"><div class="empty"><div class="big">🗂️</div>${isOn ? '입사' : '퇴사'} 항목이 없습니다.<br>우측 상단에서 등록하세요.</div></td></tr>`}
+        }).join('') : `<tr><td colspan="${colCount}"><div class="empty"><div class="big">${icon('board','lg')}</div>${isOn ? '입사' : '퇴사'} 항목이 없습니다.<br>우측 상단에서 등록하세요.</div></td></tr>`}
         </tbody></table>
       </div></div></div>`;
 
@@ -1306,7 +1282,7 @@ async function viewCalendar(view) {
                   return `<div class="cal-ev todo ${ev.done ? 'done-state' : ''}" draggable="true"
                     data-type="todo" data-todoid="${ev.id}" data-task="${ev.task_id}"
                     title="${ev.done ? '완료' : '미완료'} · ${esc(ev.title)} — ${esc(ev.task_title || '')}">
-                    <span class="cal-ev-t">${ev.done ? '☑' : '☐'} ${esc(ev.title)}</span></div>`;
+                    <span class="cal-ev-t">${ev.done ? icon('square-check','sm') : icon('square','sm')} ${esc(ev.title)}</span></div>`;
                 }
                 const isHr = ev.type === 'onboarding' || ev.type === 'offboarding' || ev.type === 'eval';
                 const pre = ev.type === 'onboarding' ? '입사' : ev.type === 'offboarding' ? '퇴사'
@@ -1399,13 +1375,13 @@ const statusPill = (s) => `<span class="pill ${TODO_STATUS_TONE[s] || 'na'}">${e
 const prioBadge = (p) => `<span class="prio prio-${PRIORITY_TONE[p] || 'mid'}">${esc(p)}</span>`;
 const catBadge = (c) => `<span class="pill cat cat-${{ '인사': 'a', '총무': 'b', '기획': 'c', '기타': 'd' }[c] || 'd'}">${esc(c)}</span>`;
 const schedText = (r) => { const a = r.start_date || '', b = r.target_date || ''; return a && b ? `${a} ~ ${b}` : (a || b || '—'); };
-const recurMark = (r) => (r.recurring_rule_id ? `<span class="recur-mark" title="정기 업무">🔁</span>` : '');
+const recurMark = (r) => (r.recurring_rule_id ? `<span class="recur-mark" title="정기 업무">${icon('repeat','sm')}</span>` : '');
 
 // 파일 링크 — safeUrl(http(s)만 허용)은 utils.js. 'Link' 버튼으로 새 탭 열기.
 function linkButtons(links) {
   return (Array.isArray(links) ? links : []).map(l => {
     const u = safeUrl(l.url); if (!u) return '';
-    return `<a class="link-btn" href="${esc(u)}" target="_blank" rel="noopener noreferrer" data-link title="${esc(l.url)}">🔗 ${esc(l.label || 'Link')}</a>`;
+    return `<a class="link-btn" href="${esc(u)}" target="_blank" rel="noopener noreferrer" data-link title="${esc(l.url)}">${icon('link','sm')} ${esc(l.label || 'Link')}</a>`;
   }).join('');
 }
 // 링크 편집기를 container에 마운트 — get()으로 현재 링크 배열 반환
@@ -1415,7 +1391,7 @@ function mountLinkEditor(container, initial) {
     container.innerHTML = `
       <div class="link-list">${links.length ? links.map((l, i) => `
         <div class="link-row">
-          ${safeUrl(l.url) ? `<a class="link-btn" href="${esc(safeUrl(l.url))}" target="_blank" rel="noopener noreferrer">🔗 ${esc(l.label || 'Link')}</a>` : `<span class="link-btn off">🔗 ${esc(l.label || 'Link')}</span>`}
+          ${safeUrl(l.url) ? `<a class="link-btn" href="${esc(safeUrl(l.url))}" target="_blank" rel="noopener noreferrer">${icon('link','sm')} ${esc(l.label || 'Link')}</a>` : `<span class="link-btn off">${icon('link','sm')} ${esc(l.label || 'Link')}</span>`}
           <span class="link-url t-muted">${esc(l.url)}</span>
           <button class="btn btn-sm" type="button" data-linkrm="${i}">삭제</button>
         </div>`).join('') : '<div class="t-muted" style="font-size:12.5px;padding:2px 0">등록된 링크가 없습니다.</div>'}</div>
@@ -1485,7 +1461,7 @@ function assigneePicker(selIds) {
 async function viewTodo(view) {
   view.innerHTML = topbar('업무 보드',
     `<div class="search"><input class="input" id="tSearch" placeholder="업무·프로젝트 검색" value="${esc(TODO.q)}"></div>
-     <button class="btn" id="presetBtn">📦 세트</button><button class="btn" id="recurBtn">🔁 반복 업무</button><button class="btn" id="addProj">＋ 프로젝트</button><button class="btn btn-primary" id="addTask">＋ 업무</button>`);
+     <button class="btn" id="presetBtn">${icon('box','sm')} 세트</button><button class="btn" id="recurBtn">${icon('repeat','sm')} 반복 업무</button><button class="btn" id="addProj">＋ 프로젝트</button><button class="btn btn-primary" id="addTask">＋ 업무</button>`);
   wireTopbar(view);
   const wrap = document.createElement('div'); view.appendChild(wrap);
 
@@ -1534,7 +1510,7 @@ async function viewTodo(view) {
   function toolbar(vTasks) {
     return `
       ${inArchive() ? '' : `<div class="quick-add">
-        <span class="qa-ic">⚡</span>
+        <span class="qa-ic">${icon('bolt','sm')}</span>
         <input class="input" id="qaTitle" placeholder="빠른 추가 — 제목 입력 후 Enter">
         <select class="select" id="qaProj" style="width:auto;max-width:160px" title="프로젝트">${projectOpts('')}</select>
         <select class="select" id="qaSub" style="width:auto" title="구분">${subcatOpts('')}</select>
@@ -1553,7 +1529,7 @@ async function viewTodo(view) {
           <option value="timeline" ${TODO.view === 'timeline' ? 'selected' : ''}>타임라인</option>
         </select>
         <div class="seg" id="stSeg">
-          ${[['진행중', '진행중'], ['완료', '완료'], ['취소', '취소'], ['all', '전체'], ['archive', '📦 보관함']].map(([s, l]) =>
+          ${[['진행중', '진행중'], ['완료', '완료'], ['취소', '취소'], ['all', '전체'], ['archive', '보관함']].map(([s, l]) =>
             `<button data-st="${s}" class="${TODO.status === s ? 'on' : ''}">${l}</button>`).join('')}
         </div>
         <select class="select" id="fCat" style="width:auto"><option value="">구분 전체</option>${PROJECT_CATEGORIES.map(c => `<option ${TODO.category === c ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select>
@@ -1767,7 +1743,7 @@ function todoSub(t) {
 // 보관/복원 버튼 — 일반 화면에선 완료/취소 항목에 '보관', 보관함에선 '복원'
 function archBtn(kind, r, arch) {
   if (arch) return `<button class="btn btn-sm" data-arch="${kind}:${r.id}">복원</button>`;
-  if (r.status === '완료' || r.status === '취소') return `<button class="btn btn-sm btn-ghost" data-arch="${kind}:${r.id}" title="보관함으로 이동">📦</button>`;
+  if (r.status === '완료' || r.status === '취소') return `<button class="btn btn-sm btn-ghost" data-arch="${kind}:${r.id}" title="보관함으로 이동">${icon('box','sm')}</button>`;
   return '';
 }
 // 중요도(초비상>여유) → 목표일 가까운 순(빈 값은 뒤) 정렬
@@ -1804,7 +1780,7 @@ function renderList(projects, tasks, projOk, taskOk, taskFilters, arch = false) 
       <div class="proj-head"><div class="proj-title">◇ (프로젝트 미연결 업무)</div></div>
       <div class="task-rows">${orphans.map(t => taskRow(t, arch)).join('')}</div>
     </div>`);
-  return `<div class="todo-list">${blocks.join('') || `<div class="empty"><div class="big">${arch ? '📦' : '🗂️'}</div>${arch ? '보관된 업무가 없습니다.' : '표시할 업무가 없습니다.<br><span class="t-muted" style="font-size:12.5px">상단 <b>＋업무</b> 또는 빠른 추가(⚡)로 등록하거나, 필터를 확인하세요.</span>'}</div>`}</div>`;
+  return `<div class="todo-list">${blocks.join('') || `<div class="empty"><div class="big">${arch ? icon('box','lg') : icon('board','lg')}</div>${arch ? '보관된 업무가 없습니다.' : '표시할 업무가 없습니다.<br><span class="t-muted" style="font-size:12.5px">상단 <b>＋업무</b> 또는 빠른 추가로 등록하거나, 필터를 확인하세요.</span>'}</div>`}</div>`;
 }
 const DONE_FOLD = 5;              // 완료·취소 하위 업무 기본 표시 건수 (초과분은 접기)
 const doneExpand = new Set();     // '더 보기'로 펼친 프로젝트 id (세션 한정)
@@ -1818,7 +1794,7 @@ function projBlock(p, vt, done, total, arch = false) {
   const shownClosed = expanded ? closedRows : closedRows.slice(0, DONE_FOLD);
   const hiddenCnt = closedRows.length - shownClosed.length;
   const rowsHtml = [...openRows, ...shownClosed].map(t => taskRow(t, arch)).join('')
-    + (hiddenCnt > 0 ? `<div class="task-empty"><button class="btn btn-sm btn-ghost" data-donemore="${p.id}">☑ 완료·취소 ${hiddenCnt}건 더 보기</button></div>` : '')
+    + (hiddenCnt > 0 ? `<div class="task-empty"><button class="btn btn-sm btn-ghost" data-donemore="${p.id}">${icon('square-check','sm')} 완료·취소 ${hiddenCnt}건 더 보기</button></div>` : '')
     + (expanded && closedRows.length > DONE_FOLD ? `<div class="task-empty"><button class="btn btn-sm btn-ghost" data-donefold="${p.id}">완료 항목 접기</button></div>` : '');
   return `
     <div class="proj-block">
@@ -1842,7 +1818,7 @@ function taskRow(t, arch = false) {
   const badge = todos.length ? `<span class="todo-badge">${todos.filter(x => x.done).length}/${todos.length}</span>` : '';
   const stateCls = t.status === '완료' ? 'is-done' : t.status === '취소' ? 'is-cancel' : '';
   const lead = arch ? ''
-    : t.status === '취소' ? `<span class="task-cancel-mark" title="취소된 업무">✖</span>`
+    : t.status === '취소' ? `<span class="task-cancel-mark" title="취소된 업무">${icon('x','sm')}</span>`
     : `<input type="checkbox" class="task-done-chk" data-donechk="${t.id}" ${t.status === '완료' ? 'checked' : ''} title="${t.status === '완료' ? '진행중으로 되돌리기' : '완료 처리'}">`;
   return `
     <div class="task-row ${stateCls}" data-task="${t.id}">
@@ -1850,12 +1826,12 @@ function taskRow(t, arch = false) {
       <span class="task-name">${recurMark(t)}${esc(t.title)}</span>
       <span class="pill sub">${esc(t.subcategory || t.category)}</span>
       ${prioBadge(t.priority)} ${arch ? statusPill(t.status) : inlineStatusSel(t)} ${ddayBadge(t)}
-      ${t.last_fu ? `<span class="fu-last" title="${esc(t.last_fu)}">💬 ${esc(t.last_fu)}</span>` : '<span class="fu-last empty"></span>'}
+      ${t.last_fu ? `<span class="fu-last" title="${esc(t.last_fu)}">${icon('chat','sm')} ${esc(t.last_fu)}</span>` : '<span class="fu-last empty"></span>'}
       <span class="t-muted asg multi">${assigneeTags(t)}</span>
       <span class="t-muted tr-date">${esc(t.target_date || '—')}</span>
-      ${t.fu_count ? `<span class="fu-chip" title="진행상황 ${t.fu_count}건">💬 ${t.fu_count}</span>` : ''}
+      ${t.fu_count ? `<span class="fu-chip" title="진행상황 ${t.fu_count}건">${icon('chat','sm')} ${t.fu_count}</span>` : ''}
       ${linkButtons(t.links)}
-      ${arch ? '' : `<button class="todo-toggle" data-todotoggle="${t.id}" title="세부 To-Do 추가">☑${badge}</button>`}
+      ${arch ? '' : `<button class="todo-toggle" data-todotoggle="${t.id}" title="세부 To-Do 추가">${icon('square-check','sm')}${badge}</button>`}
       ${archBtn('tasks', t, arch)}
     </div>
     ${arch ? '' : todoSub(t)}`;
@@ -1884,11 +1860,11 @@ function kbCard(t) {
       <div class="kb-card-top">${catBadge(t.category)} ${prioBadge(t.priority)} ${ddayBadge(t)}</div>
       <div class="kb-card-title">${recurMark(t)}${esc(t.title)}</div>
       ${t.project_title ? `<div class="kb-card-proj">◆ ${esc(t.project_title)}</div>` : ''}
-      ${t.last_fu ? `<div class="kb-card-fu" title="${esc(t.last_fu)}">💬 ${esc(t.last_fu)}</div>` : ''}
+      ${t.last_fu ? `<div class="kb-card-fu" title="${esc(t.last_fu)}">${icon('chat','sm')} ${esc(t.last_fu)}</div>` : ''}
       <div class="kb-card-foot">
         <span class="asg multi">${assigneeTags(t)}</span>
         ${t.target_date ? `<span class="t-muted">~${esc(t.target_date)}</span>` : ''}
-        ${t.fu_count ? `<span class="fu-chip">💬 ${t.fu_count}</span>` : ''}
+        ${t.fu_count ? `<span class="fu-chip">${icon('chat','sm')} ${t.fu_count}</span>` : ''}
       </div>
     </div>`;
 }
@@ -1957,7 +1933,7 @@ function renderRel(projects, tasks, projOk, taskOk) {
           <span class="t-muted multi">${assigneeTags(t)}</span>
         </div>`).join('')}</div>
     </div>`);
-  return `<div class="rel-board">${nodes.join('') || `<div class="empty"><div class="big">🔗</div>표시할 업무가 없습니다.</div>`}</div>`;
+  return `<div class="rel-board">${nodes.join('') || `<div class="empty"><div class="big">${icon('link','lg')}</div>표시할 업무가 없습니다.</div>`}</div>`;
 }
 
 // ---- 타임라인(간트) 뷰 ----
@@ -1972,7 +1948,7 @@ function renderTimeline(projects, tasks, projOk, taskOk) {
   }
   const orphans = (byProj[0] || []).filter(taskOk);
   if (orphans.length) groups.push({ proj: null, tasks: orphans });
-  if (!groups.length) return `<div class="empty"><div class="big">📊</div>표시할 업무가 없습니다.</div>`;
+  if (!groups.length) return `<div class="empty"><div class="big">${icon('chart','lg')}</div>표시할 업무가 없습니다.</div>`;
 
   // 표시할 날짜 수집 → 전체 범위 산출
   const dates = [];
@@ -2088,8 +2064,8 @@ async function openProjectModal(id, onSaved) {
     </div>` : ''}</div>
     <div class="modal-foot">
       ${editing ? `<button class="btn btn-danger" id="delProj">삭제</button>
-      <button class="btn" id="savePreset" title="이 프로젝트의 하위 업무·To-Do 구조를 세트로 저장">📦 세트로 저장</button>
-      ${d.status !== '완료' ? `<button class="btn" id="completeProj">✔ 완료 처리</button>` : `<button class="btn" id="reopenProj">↩ 진행중으로</button>`}` : ''}<div class="spacer"></div>
+      <button class="btn" id="savePreset" title="이 프로젝트의 하위 업무·To-Do 구조를 세트로 저장">${icon('box','sm')} 세트로 저장</button>
+      ${d.status !== '완료' ? `<button class="btn" id="completeProj">${icon('check','sm')} 완료 처리</button>` : `<button class="btn" id="reopenProj">${icon('undo','sm')} 진행중으로</button>`}` : ''}<div class="spacer"></div>
       <button class="btn" data-x>취소</button><button class="btn btn-primary" id="saveProj">${editing ? '저장' : '등록'}</button>
     </div>`);
   const root = $('#modal-root');
@@ -2128,7 +2104,7 @@ async function openProjectModal(id, onSaved) {
   if (editing) $('#savePreset', root)?.addEventListener('click', async () => {
     const name = prompt('세트 이름 (하위 업무·To-Do 구조가 템플릿으로 저장됩니다)', d.title);
     if (!name || !name.trim()) return;
-    try { await api('POST', `/projects/${id}/save-preset`, { name: name.trim() }); toast(`'${name.trim()}' 세트로 저장되었습니다 — 📦 세트에서 불러올 수 있습니다`); }
+    try { await api('POST', `/projects/${id}/save-preset`, { name: name.trim() }); toast(`'${name.trim()}' 세트로 저장되었습니다 — 세트에서 불러올 수 있습니다`); }
     catch (e) { toast(e.message, true); }
   });
 
@@ -2300,10 +2276,10 @@ async function openPresetModal(onChanged) {
   let pickId = null;
 
   openModal(`
-    <div class="modal-head"><h3>📦 업무 세트</h3><button class="x" data-x>×</button></div>
+    <div class="modal-head"><h3>${icon('box','sm')} 업무 세트</h3><button class="x" data-x>×</button></div>
     <div class="modal-body">
       <p class="t-muted" style="font-size:12.5px;margin-bottom:12px">자주 반복되는 업무 묶음(프로젝트+하위 업무+To-Do)을 저장해 두고 필요할 때 한 번에 불러옵니다.<br>
-      세트 만들기: 프로젝트 상세를 열어 <b>📦 세트로 저장</b>을 누르세요. 정기 실행이 필요하면 🔁 반복 업무에서 세트를 연결하세요.</p>
+      세트 만들기: 프로젝트 상세를 열어 <b>세트로 저장</b>을 누르세요. 정기 실행이 필요하면 반복 업무에서 세트를 연결하세요.</p>
       <div id="presetList" class="rule-list"><div class="t-muted">불러오는 중…</div></div>
       <div id="presetRun"></div>
     </div>
@@ -2341,14 +2317,14 @@ async function openPresetModal(onChanged) {
       const n = (c.tasks || []).length;
       return `
       <div class="rule-item">
-        <span class="rule-title">📦 ${esc(p.name)}</span>
+        <span class="rule-title">${icon('box','sm')} ${esc(p.name)}</span>
         <span class="t-muted" title="${esc((c.tasks || []).map(t => t.title).join(', '))}">업무 ${n}건${c.project ? ' · 프로젝트 포함' : ''}</span>
         <div class="spacer"></div>
         <button class="btn btn-sm btn-primary" data-puse="${p.id}">불러오기</button>
         <button class="btn btn-sm" data-pname="${p.id}">이름 변경</button>
         <button class="btn btn-sm btn-danger" data-pdel="${p.id}">삭제</button>
       </div>`;
-    }).join('') : `<div class="t-muted" style="padding:8px 0 14px">저장된 세트가 없습니다. 프로젝트 상세의 '📦 세트로 저장'으로 만들 수 있습니다.</div>`;
+    }).join('') : `<div class="t-muted" style="padding:8px 0 14px">저장된 세트가 없습니다. 프로젝트 상세의 '세트로 저장'으로 만들 수 있습니다.</div>`;
     list.querySelectorAll('[data-puse]').forEach(b => b.addEventListener('click', () => { pickId = Number(b.dataset.puse); drawRun(); }));
     list.querySelectorAll('[data-pname]').forEach(b => b.addEventListener('click', async () => {
       const p = presets.find(x => Number(x.id) === Number(b.dataset.pname));
@@ -2387,7 +2363,7 @@ async function openRecurringModal(onChanged) {
   let editId = null;   // 수정 중인 규칙 id (null이면 신규)
 
   openModal(`
-    <div class="modal-head"><h3>🔁 반복(정기) 업무 관리</h3><button class="x" data-x>×</button></div>
+    <div class="modal-head"><h3>${icon('repeat','sm')} 반복(정기) 업무 관리</h3><button class="x" data-x>×</button></div>
     <div class="modal-body">
       <p class="t-muted" style="font-size:12.5px;margin-bottom:12px">등록한 주기에 맞춰 도래일 며칠 전에 업무가 자동 생성됩니다. (예: 매월 25일 급여 — 7일 전 등록)</p>
       <div id="ruleList" class="rule-list"><div class="t-muted">불러오는 중…</div></div>
@@ -2410,7 +2386,7 @@ async function openRecurringModal(onChanged) {
         <div class="field"><label>담당자</label><select class="select" name="assignee_id">${userOpts('')}</select></div>
         <div class="field"><label>세트 연결 (선택)</label><select class="select" name="preset_id">
           <option value="">(연결 안 함 — 단일 업무 생성)</option>
-          ${presets.map(p => `<option value="${p.id}">📦 ${esc(p.name)}</option>`).join('')}</select></div>
+          ${presets.map(p => `<option value="${p.id}">${esc(p.name)}</option>`).join('')}</select></div>
         <div class="field full"><label>세부 To-Do 프리셋 <span class="t-muted" style="font-weight:400;font-size:11.5px">(한 줄에 하나 — 업무 생성 시 함께 등록. 세트 연결 시 무시)</span></label>
           <textarea class="input" name="todos_text" rows="3" placeholder="계약서 양식 갱신&#10;대상자 명단 확정&#10;결재 상신"></textarea></div>
       </form>
@@ -2460,8 +2436,8 @@ async function openRecurringModal(onChanged) {
         <span class="rule-cycle">${esc(recurDesc(r))}</span>
         <span class="rule-title">${esc(r.title)}</span>
         <span class="pill sub">${esc(r.subcategory || '')}</span>
-        ${r.preset_name ? `<span class="pill blue" title="세트 연결 — 도래 시 세트 전체 생성">📦 ${esc(r.preset_name)}</span>` : ''}
-        ${ruleTodos(r).length ? `<span class="pill gray" title="${esc(ruleTodos(r).join(', '))}">☑ ${ruleTodos(r).length}</span>` : ''}
+        ${r.preset_name ? `<span class="pill blue" title="세트 연결 — 도래 시 세트 전체 생성">${icon('box','sm')} ${esc(r.preset_name)}</span>` : ''}
+        ${ruleTodos(r).length ? `<span class="pill gray" title="${esc(ruleTodos(r).join(', '))}">${icon('square-check','sm')} ${ruleTodos(r).length}</span>` : ''}
         <span class="t-muted">${r.assignee_name ? esc(r.assignee_name) : '미지정'} · ${r.lead_days}일 전 등록${r.active && r.next_due ? ` · 다음 ${esc(r.next_due)}` : ''}</span>
         <div class="spacer"></div>
         <button class="btn btn-sm" data-rtoggle="${r.id}">${r.active ? '중지' : '재개'}</button>
@@ -2501,7 +2477,7 @@ async function openRecurringModal(onChanged) {
 /* ============ 연간 계획 ============ */
 let annualYear = new Date().getFullYear();
 async function viewAnnual(view) {
-  view.innerHTML = topbar('연간 계획', `<button class="btn" id="annRecur">🔁 반복 업무 관리</button>`);
+  view.innerHTML = topbar('연간 계획', `<button class="btn" id="annRecur">${icon('repeat','sm')} 반복 업무 관리</button>`);
   wireTopbar(view);
   $('#annRecur', view).addEventListener('click', () => openRecurringModal(() => draw()));
   await getUsers(); todoUsers = _usersCache;
@@ -2512,7 +2488,7 @@ async function viewAnnual(view) {
     body.innerHTML = `<div class="empty">불러오는 중…</div>`;
     let d;
     try { d = await api('GET', `/annual?year=${annualYear}`); }
-    catch (e) { body.innerHTML = `<div class="empty"><div class="big">⚠️</div>${esc(e.message)}</div>`; return; }
+    catch (e) { body.innerHTML = `<div class="empty"><div class="big">${icon('alert','lg')}</div>${esc(e.message)}</div>`; return; }
 
     const rules = d.rules.filter(r =>
       (!flt.category || r.category === flt.category) &&
@@ -2545,9 +2521,9 @@ async function viewAnnual(view) {
         ...insts.map(t => {
           const day = Number(t.target_date.slice(8, 10));
           let sym = '◆', cls = 'st-run';
-          if (t.status === '완료') { sym = '✅'; cls = 'st-done'; }
-          else if (t.status === '취소') { sym = '✖'; cls = 'st-cancel'; }
-          else if (t.target_date < today) { sym = '⚠️'; cls = 'st-over'; }
+          if (t.status === '완료') { sym = icon('check-circle','sm'); cls = 'st-done'; }
+          else if (t.status === '취소') { sym = icon('x','sm'); cls = 'st-cancel'; }
+          else if (t.target_date < today) { sym = icon('alert','sm'); cls = 'st-over'; }
           return `<span class="ann-dot ${cls}" data-task="${t.id}" title="${esc(t.title)} · ${esc(t.target_date)} · ${esc(t.status)}">${sym}<i>${day}</i></span>`;
         }),
         ...projs.map(ds => `<span class="ann-dot st-plan" data-rule="${r.id}" title="예정 ${esc(ds)} — 클릭하면 규칙 관리">○<i>${Number(ds.slice(8, 10))}</i></span>`),
@@ -2560,15 +2536,15 @@ async function viewAnnual(view) {
 
     body.innerHTML = `
       <div class="toolbar">
-        <button class="btn btn-sm" id="annPrev">◀</button>
+        <button class="btn btn-sm" id="annPrev">${icon('chev-left')}</button>
         <b style="min-width:64px;text-align:center">${annualYear}년</b>
-        <button class="btn btn-sm" id="annNext">▶</button>
+        <button class="btn btn-sm" id="annNext">${icon('chev-left')}</button>
         <button class="btn btn-sm" id="annToday">올해</button>
         <select class="select" id="annCat" style="width:auto"><option value="">구분 전체</option>${PROJECT_CATEGORIES.map(c => `<option ${flt.category === c ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select>
         <select class="select" id="annAsg" style="width:auto"><option value="">담당 전체</option>${todoUsers.map(u => `<option value="${u.id}" ${flt.assignee === String(u.id) ? 'selected' : ''}>${esc(u.name)}</option>`).join('')}</select>
         <div class="spacer"></div><span class="t-muted">정기 업무 ${rules.length}건</span>
       </div>
-      <div class="ann-legend"><span>✅ 완료</span><span>◆ 진행중</span><span>⚠️ 지연</span><span>✖ 취소</span><span>○ 예정(미생성 — 시기가 되면 업무 보드에 자동 등장)</span></div>
+      <div class="ann-legend"><span>${icon('check-circle','sm')} 완료</span><span>◆ 진행중</span><span>${icon('alert','sm')} 지연</span><span>${icon('x','sm')} 취소</span><span>○ 예정(미생성 — 시기가 되면 업무 보드에 자동 등장)</span></div>
       <div class="card"><div class="card-body"><div class="table-wrap">
         <table class="tbl ann-tbl"><thead><tr>
           <th class="ann-rule">정기 업무</th><th>주기</th><th>담당</th>
@@ -2576,11 +2552,11 @@ async function viewAnnual(view) {
         </tr></thead><tbody>
         ${rules.length ? rules.map(r => `
           <tr class="${r.active ? '' : 'ann-off'}">
-            <td class="ann-rule t-strong" title="${esc(r.title)}">${r.preset_name ? '📦 ' : '🔁 '}${esc(r.title)}${r.active ? '' : ' <span class="pill na" style="font-size:10px">중지</span>'}</td>
+            <td class="ann-rule t-strong" title="${esc(r.title)}">${r.preset_name ? icon('box','sm')+' ' : icon('repeat','sm')+' '}${esc(r.title)}${r.active ? '' : ' <span class="pill na" style="font-size:10px">중지</span>'}</td>
             <td class="t-muted" style="white-space:nowrap">${esc(recurDesc(r))}</td>
             <td class="t-muted" style="white-space:nowrap">${r.assignee_name ? `<span class="udot" style="background:${esc(r.assignee_color || '#888')}"></span>${esc(r.assignee_name)}` : '—'}</td>
             ${[...Array(12)].map((_, i) => cellHtml(r, i + 1)).join('')}
-          </tr>`).join('') : `<tr><td colspan="15"><div class="empty"><div class="big">📋</div>등록된 정기 업무가 없습니다.<br><span class="t-muted" style="font-size:12.5px">우측 상단 <b>🔁 반복 업무 관리</b>에서 연·반기·분기·월·주 단위 업무를 예약하세요.</span></div></td></tr>`}
+          </tr>`).join('') : `<tr><td colspan="15"><div class="empty"><div class="big">${icon('annual','lg')}</div>등록된 정기 업무가 없습니다.<br><span class="t-muted" style="font-size:12.5px">우측 상단 <b>반복 업무 관리</b>에서 연·반기·분기·월·주 단위 업무를 예약하세요.</span></div></td></tr>`}
         </tbody></table>
       </div></div></div>`;
 
@@ -2621,7 +2597,7 @@ async function viewEmployees(view) {
       <select class="select" id="fField" style="width:auto"><option value="">분야 전체</option>${meta.fields.map(f => `<option>${esc(f)}</option>`).join('')}</select>
       <select class="select" id="fOrg" style="width:auto;max-width:200px"><option value="">소속 전체</option>${meta.orgs.map(f => `<option>${esc(f)}</option>`).join('')}</select>
       <div class="spacer"></div><span class="t-muted" id="empCount"></span>
-      <button class="btn btn-sm" id="btnExcel" title="엑셀(CSV) 내려받기">⬇ 엑셀</button>
+      <button class="btn btn-sm" id="btnExcel" title="엑셀(CSV) 내려받기">${icon('download','sm')} 엑셀</button>
     </div>
     <div id="empResult"></div>`;
 
@@ -2643,7 +2619,7 @@ async function viewEmployees(view) {
           <td>${esc(r.position)}</td><td>${esc(r.field)}</td><td>${esc(r.dept)}</td>
           <td class="t-muted">${esc(r.org)}</td><td>${esc(r.join_date)}</td>
           <td><span class="pill ${r.status === '재직' ? 'done' : r.status === '휴직' ? 'todo' : 'na'}">${esc(r.status)}</span></td>
-        </tr>`).join('') : `<tr><td colspan="8"><div class="empty"><div class="big">👥</div>해당 인원이 없습니다.</div></td></tr>`}
+        </tr>`).join('') : `<tr><td colspan="8"><div class="empty"><div class="big">${icon('people','lg')}</div>해당 인원이 없습니다.</div></td></tr>`}
         </tbody></table>
       </div></div></div>`;
     resultEl.querySelector('tbody').addEventListener('click', e => { const tr = e.target.closest('[data-id]'); if (tr) openEmpModal(Number(tr.dataset.id)); });
@@ -2726,8 +2702,8 @@ async function openEmpModal(id) {
       const el = $('#empHist', root);
       if (!el || (!on && !off)) return;
       const parts = [];
-      if (on) parts.push(`<button class="btn btn-sm" type="button" data-hist="on:${on.id}">📥 입사 기록 (${esc(on.state)})</button>`);
-      if (off) parts.push(`<button class="btn btn-sm" type="button" data-hist="off:${off.id}">📤 퇴사 기록 (${esc(off.state)})</button>`);
+      if (on) parts.push(`<button class="btn btn-sm" type="button" data-hist="on:${on.id}">${icon('in','sm')} 입사 기록 (${esc(on.state)})</button>`);
+      if (off) parts.push(`<button class="btn btn-sm" type="button" data-hist="off:${off.id}">${icon('out','sm')} 퇴사 기록 (${esc(off.state)})</button>`);
       el.innerHTML = `<div class="section-title">입·퇴사 기록</div><div class="link-add">${parts.join('')}</div>`;
       el.querySelectorAll('[data-hist]').forEach(b => b.addEventListener('click', () => {
         const [k, hid] = b.dataset.hist.split(':');
@@ -3044,13 +3020,13 @@ function openSettings() {
     const last = localStorage.getItem(LAST_BACKUP_KEY);
     const encOn = !!(await bkGet('bkPass').catch(() => null));
     const encBlock = `
-      <div class="cfg-chips" style="gap:14px;margin-top:10px"><span>백업 암호화: <b>${encOn ? '🔒 사용 중' : '미사용'}</b></span></div>
+      <div class="cfg-chips" style="gap:14px;margin-top:10px"><span>백업 암호화: <b>${encOn ? '사용 중' : '미사용'}</b></span></div>
       <div class="link-add" style="margin-top:6px;flex-wrap:wrap">
         <input class="input" type="password" id="bkPassInput" placeholder="암호화 패스프레이즈(4자+)" style="max-width:220px" autocomplete="new-password">
         <button class="btn btn-sm" type="button" id="bkEncApply">암호화 적용</button>
         ${encOn ? '<button class="btn btn-sm" type="button" id="bkEncOff">암호화 해제</button>' : ''}
       </div>
-      <p class="t-muted" style="font-size:11.5px;margin:6px 0 0">⚠️ 암호화하면 복원 시 동일한 패스프레이즈가 필요합니다. 패스프레이즈는 백업 파일과 <b>별도로</b> 안전하게 보관하세요(분실 시 복원 불가).</p>`;
+      <p class="t-muted" style="font-size:11.5px;margin:6px 0 0">암호화하면 복원 시 동일한 패스프레이즈가 필요합니다. 패스프레이즈는 백업 파일과 <b>별도로</b> 안전하게 보관하세요(분실 시 복원 불가).</p>`;
     backupBox.innerHTML = `
       ${BACKUP_SUPPORTED ? `<p class="t-muted" style="font-size:12px;margin:0 0 8px">백업 폴더를 지정하면 접속 시 하루 1회 자동 저장되고 최근 ${BACKUP_KEEP}개만 보관됩니다(이후 자동 삭제).</p>
       <div class="cfg-chips" style="gap:14px">

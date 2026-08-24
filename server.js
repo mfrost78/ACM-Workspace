@@ -1522,14 +1522,18 @@ app.get('/api/annual', requireAuth, wrap(async (req, res) => {
 }));
 
 /* ---------------- Static ---------------- */
-// 브라우저 5분 + CDN(Vercel 엣지) 1일 캐시 — 엣지 캐시는 배포 시 자동 퍼지되므로
-// 정적 파일 요청이 서버리스 함수(콜드스타트)까지 도달하지 않게 한다.
+// 자산(css/js)은 index.html 에서 ?v=N 으로 참조하므로 길게 캐시해도 안전 —
+// 배포로 v 가 바뀌면 URL 이 달라져 즉시 새 파일을 받는다.
 const STATIC_CACHE = 'public, max-age=300, s-maxage=86400, stale-while-revalidate=300';
+// 진입 문서는 항상 재검증한다. 이게 캐시되면 '구 HTML + 신 JS' 조합이 생겨
+// 아이콘 스프라이트가 없는 문서에 새 스크립트가 붙는 깨진 상태가 될 수 있다.
+const HTML_CACHE = 'no-cache';
 app.use(express.static(path.join(__dirname, 'public'), {
+  index: false,                                   // '/' 는 아래 핸들러가 처리 (헤더 제어)
   setHeaders: (res) => res.setHeader('Cache-Control', STATIC_CACHE),
 }));
 app.get('*', (req, res) => {
-  res.setHeader('Cache-Control', STATIC_CACHE);
+  res.setHeader('Cache-Control', HTML_CACHE);
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
