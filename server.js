@@ -699,7 +699,6 @@ app.get('/api/calendar', requireAuth, wrap(async (req, res) => {
   const events = [];
   await generateRecurringTasks();   // 정기 업무 도래분 lazy 생성 (스로틀 적용 — 대개 no-op)
   bg(generateDueNotifications());   // 마감 임박 알림 lazy 발송 (스로틀)
-  const today = kstTodayStr();
   const mine = req.query.mine === '1';
   const mineP = mine ? [req.user.id] : [];
   const mineSqlP = mine ? `AND p.assignee_id = ?` : '';
@@ -738,15 +737,14 @@ app.get('/api/calendar', requireAuth, wrap(async (req, res) => {
     events.push({ type: 'offboarding', id: o.id, date: o.leave_date, title: o.name, category: o.category, state: o.state });
   }
 
-  // 업무(프로젝트/하위업무) 목표일 — 취소·아카이브 제외, mine=1이면 본인 담당만
+  // 업무(프로젝트/하위업무) 목표일 — 취소 제외, mine=1이면 본인 담당만.
+  // 보관함 이관(아카이브) 여부와 무관하게 캘린더에는 과거 기록으로 계속 표시한다.
   for (const p of projs) {
-    if (isArchivedRow(p, today)) continue;
     if (from && p.target_date < from) continue;
     if (to && p.target_date > to) continue;
     events.push({ type: 'project', id: p.id, date: p.target_date, title: p.title, category: p.category, state: p.status, assignee: p.assignee, assignee_color: p.assignee_color });
   }
   for (const t of tks) {
-    if (isArchivedRow(t, today)) continue;
     const ids = taskAssignees(t);
     if (mine && !ids.includes(req.user.id)) continue;   // 복수 담당자 멤버십
     if (from && t.target_date < from) continue;
@@ -760,7 +758,7 @@ app.get('/api/calendar', requireAuth, wrap(async (req, res) => {
     const todos = await q(`SELECT td.id, td.task_id, td.content, td.done, td.due_date, td.created_at,
                                   t.title AS task_title, t.assignee_id, t.assignee_ids
                              FROM task_todos td JOIN tasks t ON t.id = td.task_id
-                            WHERE t.status <> '취소' AND t.archived_at IS NULL`);
+                            WHERE t.status <> '취소'`);
     for (const td of todos) {
       if (!taskAssignees(td).includes(req.user.id)) continue;
       const date = td.due_date || tsToDateStr(td.created_at);
