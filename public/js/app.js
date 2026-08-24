@@ -971,7 +971,10 @@ async function listView(view, kind) {
   const filter = { state: '진행중', q: '', category: '', month: '', tasks: [], hideDone: false };
   const selected = new Set();
   let allRows = [];   // 서버에서 받은 전체(상태 무관)
+  // 표를 화면 높이에 맞춘 박스 안에서 스크롤시키기 위해 화면 전체를 세로 플렉스로 둔다
+  view.classList.add('view-fill');
   const wrap = document.createElement('div');
+  wrap.className = 'list-body';
   view.appendChild(wrap);
   const dateLabel = isOn ? '입사월' : '퇴사월';
 
@@ -999,7 +1002,7 @@ async function listView(view, kind) {
       <label class="chk-inline" title="처리할 것이 남은 항목 열만 표시"><input type="checkbox" id="fHideDone"> 미완료 항목만</label>
       <div class="chips" id="chipArea"></div>
     </div>
-    <div id="listResult"></div>`;
+    <div id="listResult" class="list-result"></div>`;
 
   const seg = wrap.querySelector('.seg');
   const fCat = $('#fCat', wrap);
@@ -1042,7 +1045,8 @@ async function listView(view, kind) {
 
   // 검색/필터 변경 시 테이블 영역만 갱신(검색 input은 그대로 유지)
   function renderTable() {
-    const prevScroll = resultEl.querySelector('.table-wrap')?.scrollLeft || 0;
+    const prevFrame = resultEl.querySelector('.table-frame');
+    const prevScroll = { left: prevFrame?.scrollLeft || 0, top: prevFrame?.scrollTop || 0 };
     const filtered = applyFilter();
     countEl.textContent = `${filtered.length}건`;
     bulkDel.disabled = !selected.size;
@@ -1077,7 +1081,7 @@ async function listView(view, kind) {
     const colCount = 1 + (2 + (isOn ? 0 : 2)) + 1 + visDefs.length + 3;   // +메모, +입사일(퇴사)
     resultEl.innerHTML = `
       ${waitCount ? `<div class="view-hint">${icon('hourglass','sm')} 체크리스트 완료 — <b>${isOn ? '입사' : '퇴사'} 확정 대기 ${waitCount}건</b>. 이름을 눌러 상세에서 확정하세요.</div>` : ''}
-      <div class="card"><div class="card-body"><div class="table-wrap">
+      <div class="table-frame">
         <table class="tbl xls-tbl"><thead><tr>
           <th class="sticky-col sel-col"><input type="checkbox" id="selAll" ${filtered.length && filtered.every(r => selected.has(r.id)) ? 'checked' : ''}></th>
           <th class="sticky-col name-col">대상자</th>
@@ -1123,7 +1127,7 @@ async function listView(view, kind) {
           </tr>`;
         }).join('') : `<tr><td colspan="${colCount}"><div class="empty"><div class="big">${icon('board','lg')}</div>${isOn ? '입사' : '퇴사'} 항목이 없습니다.<br>우측 상단에서 등록하세요.</div></td></tr>`}
         </tbody></table>
-      </div></div></div>`;
+      </div>`;
 
     // sel-col의 실제 렌더링 너비에 맞춰 name-col의 sticky 위치를 동적으로 보정
     const selColEl = resultEl.querySelector('table.xls-tbl thead .sel-col');
@@ -1131,8 +1135,9 @@ async function listView(view, kind) {
       const w = Math.ceil(selColEl.getBoundingClientRect().width);
       resultEl.querySelectorAll('table.xls-tbl .name-col').forEach(el => { el.style.left = `${w}px`; });
     }
-    // 드롭다운 변경 후 재렌더 시 스크롤 위치 복원
-    if (prevScroll) { const tw = resultEl.querySelector('.table-wrap'); if (tw) tw.scrollLeft = prevScroll; }
+    // 드롭다운 변경 후 재렌더 시 스크롤 위치 복원 (가로·세로 모두)
+    const tf = resultEl.querySelector('.table-frame');
+    if (tf) { tf.scrollLeft = prevScroll.left; tf.scrollTop = prevScroll.top; }
 
     // 이름 클릭시에만 상세 팝업 오픈
     resultEl.querySelectorAll('.name-link').forEach(el => el.addEventListener('click', () => {
@@ -2577,7 +2582,9 @@ async function viewEmployees(view) {
   wireTopbar(view);
   $('#addEmp', view).addEventListener('click', () => openEmpModal());
   const filter = { status: '재직', q: '', field: '', org: '' };
-  const wrap = document.createElement('div'); view.appendChild(wrap);
+  // 505명 규모라 입퇴사 표와 같은 고정 프레임 적용 (머리글 고정 + 스크롤바 상시 노출)
+  view.classList.add('view-fill');
+  const wrap = document.createElement('div'); wrap.className = 'list-body'; view.appendChild(wrap);
 
   function buildQs() {
     const qs = new URLSearchParams();
@@ -2599,7 +2606,7 @@ async function viewEmployees(view) {
       <div class="spacer"></div><span class="t-muted" id="empCount"></span>
       <button class="btn btn-sm" id="btnExcel" title="엑셀(CSV) 내려받기">${icon('download','sm')} 엑셀</button>
     </div>
-    <div id="empResult"></div>`;
+    <div id="empResult" class="list-result"></div>`;
 
   const resultEl = $('#empResult', wrap);
   const countEl = $('#empCount', wrap);
@@ -2610,8 +2617,8 @@ async function viewEmployees(view) {
     lastRows = rows;
     countEl.textContent = `${rows.length}명`;
     resultEl.innerHTML = `
-      <div class="card"><div class="card-body"><div class="table-wrap">
-        <table class="tbl"><thead><tr>
+      <div class="table-frame">
+        <table class="tbl sticky-head"><thead><tr>
           <th>사번</th><th>성명</th><th>직위</th><th>분야</th><th>부서/현장</th><th>소속</th><th>입사일</th><th>상태</th>
         </tr></thead><tbody>
         ${rows.length ? rows.map(r => `<tr data-id="${r.id}">
@@ -2621,7 +2628,7 @@ async function viewEmployees(view) {
           <td><span class="pill ${r.status === '재직' ? 'done' : r.status === '휴직' ? 'todo' : 'na'}">${esc(r.status)}</span></td>
         </tr>`).join('') : `<tr><td colspan="8"><div class="empty"><div class="big">${icon('people','lg')}</div>해당 인원이 없습니다.</div></td></tr>`}
         </tbody></table>
-      </div></div></div>`;
+      </div>`;
     resultEl.querySelector('tbody').addEventListener('click', e => { const tr = e.target.closest('[data-id]'); if (tr) openEmpModal(Number(tr.dataset.id)); });
   }
 

@@ -269,6 +269,38 @@ a { color: var(--accent); text-decoration: none; }
 
 /* ===== Table ===== */
 .table-wrap { overflow-x: auto; }
+
+/* ===== 고정 프레임 목록 (입퇴사 등 가로·세로 양방향 스크롤이 필요한 표) =====
+   화면 높이에 맞춘 박스를 페이지에 고정하고 표는 그 안에서만 스크롤한다.
+   · 세로: 머리글 행이 박스 상단에 붙어 있어 아래로 내려도 열 의미를 잃지 않는다
+   · 가로: 스크롤바가 박스 하단에 항상 보이므로 끝까지 내리지 않아도 좌우 이동이 가능하다 */
+.main.view-fill {
+  display: flex; flex-direction: column;
+  height: calc(100dvh - var(--topbar-h));
+  padding-bottom: 20px;
+}
+.view-fill > .topbar { flex-shrink: 0; }
+.view-fill .list-body { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.view-fill .list-body > .toolbar { flex-shrink: 0; }
+.view-fill .list-result { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.view-fill .list-result > .view-hint { flex-shrink: 0; }
+.table-frame {
+  flex: 1; min-height: 140px; overflow: auto;
+  border: 1px solid var(--border); background: var(--bg-elevated);
+  overscroll-behavior: contain;            /* 표 끝에서 페이지가 따라 움직이지 않게 */
+}
+/* 머리글 고정 — 좌측 고정 열과 겹치는 좌상단 모서리는 더 위로 */
+.table-frame table.xls-tbl thead th {
+  position: sticky; top: 0; z-index: 4; background: var(--surface-2);
+  box-shadow: inset 0 -1px 0 var(--border-strong);
+}
+.table-frame table.xls-tbl thead .sticky-col { z-index: 6; background: var(--surface-2); }
+.table-frame table.xls-tbl tbody .sticky-col { background: var(--bg-elevated); }
+/* 좌측 고정 열이 없는 일반 표(재직자 현황 등)도 머리글만 고정 */
+.table-frame table.sticky-head thead th {
+  position: sticky; top: 0; z-index: 4; background: var(--surface-2);
+  box-shadow: inset 0 -1px 0 var(--border-strong);
+}
 table.tbl { width: 100%; border-collapse: collapse; }
 table.tbl th { text-align: left; font-size: 11.5px; font-weight: 600; color: var(--text-3); text-transform: uppercase;
   letter-spacing: .03em; padding: 10px 14px; border-bottom: 1px solid var(--border); white-space: nowrap; }
