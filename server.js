@@ -1529,7 +1529,9 @@ const STATIC_CACHE = 'public, max-age=300, s-maxage=86400, stale-while-revalidat
 // 아이콘 스프라이트가 없는 문서에 새 스크립트가 붙는 깨진 상태가 될 수 있다.
 const HTML_CACHE = 'no-cache';
 // 폰트는 2MB짜리 불변 파일 — 짧은 캐시를 물리면 5분마다 다시 받는다. 1년 고정.
-// (교체가 필요하면 파일명을 바꾸면 된다)
+// (교체가 필요하면 파일명을 바꾼다)
+// 주의: Vercel 에서는 public/ 파일을 엣지가 먼저 처리해 이 헤더가 닿지 않는다.
+//       운영 캐시는 vercel.json 의 headers 에서 지정하고, 여기 값은 로컬·자체호스팅용.
 const FONT_CACHE = 'public, max-age=31536000, immutable';
 app.use(express.static(path.join(__dirname, 'public'), {
   index: false,                                   // '/' 는 아래 핸들러가 처리 (헤더 제어)
