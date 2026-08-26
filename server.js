@@ -360,7 +360,10 @@ const TG_CODE_TTL_MIN = 10;
 // 대신 등록 시 지정한 secret_token 헤더가 일치할 때만 처리한다.
 app.post('/api/telegram/webhook', wrap(async (req, res) => {
   const secret = tgWebhookSecret();
-  if (secret && req.get('X-Telegram-Bot-Api-Secret-Token') !== secret) return res.sendStatus(401);
+  // 시크릿이 없으면 열어두지 않고 아예 닫는다 (fail-closed).
+  // 열어두면 남이 /start <코드> 를 쏴서 계정 연결을 시도할 수 있다.
+  if (!secret) return res.sendStatus(503);
+  if (req.get('X-Telegram-Bot-Api-Secret-Token') !== secret) return res.sendStatus(401);
   res.sendStatus(200);                       // 텔레그램에는 즉시 200 (재전송 방지)
 
   const msg = req.body?.message;
