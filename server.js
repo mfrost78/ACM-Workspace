@@ -1,5 +1,6 @@
 import express from 'express';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { q, one, run, logActivity, getPool } from './lib/db.js';
 import {
@@ -13,10 +14,17 @@ import {
   deriveState, effectiveTasks, progress,
   TODO_STATUS, TODO_PRIORITY, PROJECT_CATEGORIES, TASK_SUBCATEGORIES,
 } from './public/js/config.js';
+import {
+  tgEnabled, tgSend, tgFormat, tgEsc, tgUsername, tgWebhookSecret, tgSetWebhook, tgGetWebhookInfo,
+} from './lib/telegram.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 const PORT = process.env.PORT || 4000;
+
+// 알림 메시지에 붙일 앱 주소 (텔레그램에서 바로 열 수 있게)
+const APP_URL = process.env.APP_URL
+  || (process.env.VERCEL_PROJECT_PRODUCTION_URL ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}` : '');
 
 const ON_VERCEL = !!process.env.VERCEL;
 const PROD = process.env.NODE_ENV === 'production' || ON_VERCEL;
@@ -89,13 +97,20 @@ const bg = (promise) => { promise.catch(e => console.error('백그라운드 동�
 // (드물게 서버리스 인스턴스 정지 시 일부 누락 가능하나 기능상 영향 없음)
 const logAct = (o) => { bg(logActivity(o)); };
 
-// 인앱 알림 1건 생성 — 본인(actor)에게는 보내지 않음
+// 알림 1건 생성 — 본인(actor)에게는 보내지 않음.
+// 인앱 알림(DB)은 항상 남기고, 텔레그램을 연결해 둔 사용자에게는 같은 내용을 메신저로도 보낸다.
+// 이 함수가 모든 알림의 유일한 출구라 여기 한 곳만 거치면 전 종류가 함께 나간다.
 async function pushNotif({ userId, type, title, body, taskId, actor }) {
   userId = Number(userId);
   if (!userId || (actor && userId === actor.id)) return;
   await run(
     `INSERT INTO notifications (user_id, type, title, body, task_id, actor_id, actor_name) VALUES (?, ?, ?, ?, ?, ?, ?)`,
     [userId, type, title, body ?? '', taskId ?? null, actor?.id ?? null, actor?.name ?? '']);
+
+  if (!tgEnabled()) return;
+  const u = await one(`SELECT tg_chat_id FROM users WHERE id = ? AND tg_on = 1 AND tg_chat_id IS NOT NULL`, [userId]);
+  if (!u?.tg_chat_id) return;
+  await tgSend(u.tg_chat_id, tgFormat({ title, body, actorName: actor?.name, url: APP_URL }));
 }
 // 업무 담당자 지정/변경 알림 — assigned: 새로 배정된 담당자, unassigned: 담당에서 제외된 담당자
 async function notifyTask({ assigned = [], unassigned = [], task, taskId, actor }) {
@@ -335,6 +350,92 @@ function isArchivedRow(r, today) {
   return !!base && addDays(base, ARCHIVE_DAYS) < today;
 }
 
+/* ---------------- 텔레그램 알림 ----------------
+   연결 절차: 앱에서 [연결하기] → 1회성 코드로 t.me 딥링크 생성 → 사용자가 봇에서 [시작]
+   → 텔레그램이 아래 웹훅으로 '/start <코드>' 전달 → 코드가 맞으면 대화방 id 저장.
+   비밀번호나 세션을 텔레그램에 넘기지 않고, 코드도 10분 뒤 만료된다. */
+const TG_CODE_TTL_MIN = 10;
+
+// 웹훅 — 텔레그램 서버가 호출하므로 로그인 없이 열려 있다.
+// 대신 등록 시 지정한 secret_token 헤더가 일치할 때만 처리한다.
+app.post('/api/telegram/webhook', wrap(async (req, res) => {
+  const secret = tgWebhookSecret();
+  if (secret && req.get('X-Telegram-Bot-Api-Secret-Token') !== secret) return res.sendStatus(401);
+  res.sendStatus(200);                       // 텔레그램에는 즉시 200 (재전송 방지)
+
+  const msg = req.body?.message;
+  const text = (msg?.text || '').trim();
+  const chatId = msg?.chat?.id;
+  if (!chatId) return;
+
+  const m = text.match(/^\/start\s+(\S+)/);
+  if (!m) {
+    await tgSend(chatId, '연결하려면 Workspace 설정 화면에서 <b>텔레그램 연결하기</b>를 눌러 주세요.');
+    return;
+  }
+  const user = await one(
+    `SELECT id, name FROM users
+      WHERE tg_code = ? AND tg_code_at > now() - interval '${TG_CODE_TTL_MIN} minutes'`, [m[1]]);
+  if (!user) {
+    await tgSend(chatId, '연결 코드가 만료되었거나 올바르지 않습니다. 설정에서 다시 시도해 주세요.');
+    return;
+  }
+  // 같은 대화방이 다른 계정에 붙어 있었다면 정리 (계정당 1개, 대화방당 1개)
+  await run(`UPDATE users SET tg_chat_id = NULL WHERE tg_chat_id = ? AND id <> ?`, [String(chatId), user.id]);
+  await run(`UPDATE users SET tg_chat_id = ?, tg_on = 1, tg_code = NULL, tg_code_at = NULL WHERE id = ?`,
+    [String(chatId), user.id]);
+  await tgSend(chatId, `<b>${tgEsc(user.name)}</b>님 계정에 연결되었습니다.\n업무 알림을 여기로 보내드립니다.`);
+}));
+
+// 현재 연결 상태
+app.get('/api/telegram/me', requireAuth, wrap(async (req, res) => {
+  const u = await one('SELECT tg_chat_id, tg_on FROM users WHERE id = ?', [req.user.id]);
+  res.json({
+    available: tgEnabled(),
+    botUsername: tgUsername(),
+    linked: !!u?.tg_chat_id,
+    enabled: !!u?.tg_on,
+  });
+}));
+
+// 연결 시작 — 1회성 코드 발급 후 딥링크 반환
+app.post('/api/telegram/link', requireAuth, wrap(async (req, res) => {
+  if (!tgEnabled()) return res.status(400).json({ error: '서버에 텔레그램 봇이 설정되어 있지 않습니다.' });
+  const bot = tgUsername();
+  if (!bot) return res.status(400).json({ error: 'TELEGRAM_BOT_USERNAME 환경변수가 필요합니다.' });
+  const code = crypto.randomBytes(9).toString('base64url');
+  await run('UPDATE users SET tg_code = ?, tg_code_at = now() WHERE id = ?', [code, req.user.id]);
+  res.json({ url: `https://t.me/${bot}?start=${code}`, expiresInMin: TG_CODE_TTL_MIN });
+}));
+
+// 연결 해제 / 수신 on·off / 테스트 발송
+app.post('/api/telegram/unlink', requireAuth, wrap(async (req, res) => {
+  await run('UPDATE users SET tg_chat_id = NULL, tg_code = NULL, tg_code_at = NULL WHERE id = ?', [req.user.id]);
+  res.json({ ok: true });
+}));
+app.post('/api/telegram/toggle', requireAuth, wrap(async (req, res) => {
+  const on = req.body?.on ? 1 : 0;
+  await run('UPDATE users SET tg_on = ? WHERE id = ?', [on, req.user.id]);
+  res.json({ ok: true, enabled: !!on });
+}));
+app.post('/api/telegram/test', requireAuth, wrap(async (req, res) => {
+  const u = await one('SELECT tg_chat_id FROM users WHERE id = ?', [req.user.id]);
+  if (!u?.tg_chat_id) return res.status(400).json({ error: '먼저 텔레그램을 연결해 주세요.' });
+  const ok = await tgSend(u.tg_chat_id, tgFormat({
+    title: '테스트 알림', body: '이 메시지가 보이면 정상 연결된 것입니다.', url: APP_URL }));
+  if (!ok) return res.status(502).json({ error: '발송에 실패했습니다. 봇을 차단하지 않았는지 확인해 주세요.' });
+  res.json({ ok: true });
+}));
+
+// 웹훅 등록 (관리자) — 배포 후 1회. 주소는 APP_URL 기준.
+app.post('/api/telegram/setup', requireAuth, requireAdmin, wrap(async (req, res) => {
+  if (!tgEnabled()) return res.status(400).json({ error: 'TELEGRAM_BOT_TOKEN 이 없습니다.' });
+  const base = (req.body?.baseUrl || APP_URL || '').replace(/\/+$/, '');
+  if (!/^https:\/\//.test(base)) return res.status(400).json({ error: 'https 주소가 필요합니다(APP_URL 확인).' });
+  await tgSetWebhook(`${base}/api/telegram/webhook`);
+  res.json({ ok: true, info: await tgGetWebhookInfo() });
+}));
+
 /* ---------------- Auth ---------------- */
 app.post('/api/auth/login', wrap(async (req, res) => {
   const { username, password } = req.body || {};
@@ -540,7 +641,7 @@ app.put('/api/onboarding/:id', requireAuth, wrap(async (req, res) => {
     const effOld = effectiveTasks(ONBOARDING_TASKS, 'on', cur.category, tasksObj(cur.tasks));
     const prOld = progress(ONBOARDING_TASKS, cur.category, effOld);
     if (prOld < 100 && progress(ONBOARDING_TASKS, cat, eff) === 100) {
-      bg(notifyAdminsReady('on', cur.name, req.user));
+      await notifyAdminsReady('on', cur.name, req.user);
     }
   }
   const sets = ONB_FIELDS.filter(f => f in b);
@@ -634,7 +735,7 @@ app.put('/api/offboarding/:id', requireAuth, wrap(async (req, res) => {
     const effOld = effectiveTasks(OFFBOARDING_TASKS, 'off', cur.category, tasksObj(cur.tasks), cur.join_date, cur.leave_date);
     const prOld = progress(OFFBOARDING_TASKS, cur.category, effOld);
     if (prOld < 100 && progress(OFFBOARDING_TASKS, cat, eff) === 100) {
-      bg(notifyAdminsReady('off', cur.name, req.user));
+      await notifyAdminsReady('off', cur.name, req.user);
     }
   }
   const sets = OFB_FIELDS.filter(f => f in b);
@@ -1039,7 +1140,7 @@ app.post('/api/tasks', requireAuth, wrap(async (req, res) => {
   const ph = TASK_FIELDS.map(() => '?').join(',');
   const row = await one(`INSERT INTO tasks (${TASK_FIELDS.join(',')}, created_by) VALUES (${ph}, ?) RETURNING *`, [...vals, req.user.id]);
   logAct({ userId: req.user.id, userName: req.user.name, action: '업무 등록', targetType: 'task', targetId: row.id, detail: b.title });
-  bg(notifyTask({ assigned: ids, task: row, taskId: row.id, actor: req.user }));   // 배정 담당자에게 알림
+  await notifyTask({ assigned: ids, task: row, taskId: row.id, actor: req.user });   // 배정 담당자에게 알림
   res.json(row);
 }));
 
@@ -1071,7 +1172,7 @@ app.put('/api/tasks/:id', requireAuth, wrap(async (req, res) => {
   // 알림: 담당자 지정/변경 — 새로 배정된 담당자 / 담당에서 제외된 담당자
   const added = ids.filter(i => !oldIds.includes(i));
   const removed = oldIds.filter(i => !ids.includes(i));
-  bg(notifyTask({ assigned: added, unassigned: removed, task: next, taskId: id, actor: req.user }));
+  await notifyTask({ assigned: added, unassigned: removed, task: next, taskId: id, actor: req.user });
   // 알림: 상태 변경 — 담당자에게, 완료 시 등록자에게도 (본인이 바꾼 경우는 pushNotif가 제외)
   const jobs = [];
   if ('status' in b && b.status !== cur.status) {
@@ -1084,7 +1185,7 @@ app.put('/api/tasks/:id', requireAuth, wrap(async (req, res) => {
   if ('target_date' in b && b.target_date !== cur.target_date) {
     for (const uid of ids) jobs.push(pushNotif({ userId: uid, type: 'task_date', title: `목표일이 ${b.target_date || '미정'}(으)로 변경되었습니다`, body: next.title, taskId: id, actor: req.user }));
   }
-  if (jobs.length) bg(Promise.all(jobs));
+  if (jobs.length) await Promise.all(jobs);
   res.json({ ok: true });
 }));
 
@@ -1117,10 +1218,10 @@ app.post('/api/tasks/:id/followups', requireAuth, wrap(async (req, res) => {
   // 담당자 + 업무 등록자에게 진행상황 알림 (작성 본인은 pushNotif가 제외)
   const targets = new Set(taskAssignees(task));
   if (task.created_by) targets.add(Number(task.created_by));
-  bg(Promise.all([...targets].map(uid => pushNotif({
+  await Promise.all([...targets].map(uid => pushNotif({
     userId: uid, type: 'task_fu', title: '업무에 진행상황이 등록되었습니다',
     body: `${task.title} — ${String(b.content).slice(0, 80)}`, taskId: id, actor: req.user,
-  }))));
+  })));
   res.json(row);
 }));
 
@@ -1458,7 +1559,7 @@ app.post('/api/presets/:id/instantiate', requireAuth, wrap(async (req, res) => {
   const aid = req.body?.assignee_id ? Number(req.body.assignee_id) : null;
   const r = await instantiatePreset(preset.content, base, aid, req.user.id, null);
   logAct({ userId: req.user.id, userName: req.user.name, action: '업무 세트 불러오기', targetType: 'preset', targetId: id, detail: `${preset.name} (기준일 ${base})` });
-  if (aid) bg(pushNotif({ userId: aid, type: 'task_assigned', title: `업무 세트 '${preset.name}' ${r.count}건이 배정되었습니다`, body: '', actor: req.user }));
+  if (aid) await pushNotif({ userId: aid, type: 'task_assigned', title: `업무 세트 '${preset.name}' ${r.count}건이 배정되었습니다`, body: '', actor: req.user });
   res.json({ ok: true, project_id: r.projectId, count: r.count });
 }));
 

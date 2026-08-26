@@ -2912,6 +2912,59 @@ async function downloadBackupJSON() {
 }
 
 /* ============ 설정(비밀번호 변경) ============ */
+// 설정 > 텔레그램 알림 — 연결/해제/수신토글/테스트
+async function drawTelegram(root, isAdmin) {
+  const box = $('#tgBox', root);
+  if (!box) return;
+  let st;
+  try { st = await api('GET', '/telegram/me'); }
+  catch { box.innerHTML = `<p class="t-muted" style="font-size:12px;margin:0">상태를 불러오지 못했습니다.</p>`; return; }
+
+  if (!st.available) {
+    box.innerHTML = `<p class="t-muted" style="font-size:12px;margin:0">
+      서버에 텔레그램 봇이 설정되어 있지 않습니다.
+      ${isAdmin ? '관리자가 <code>TELEGRAM_BOT_TOKEN</code>·<code>TELEGRAM_BOT_USERNAME</code> 환경변수를 등록하면 사용할 수 있습니다.' : '관리자에게 문의하세요.'}</p>`;
+    return;
+  }
+
+  box.innerHTML = st.linked
+    ? `<div class="flex" style="flex-wrap:wrap;gap:8px">
+         <span class="pill done">연결됨</span>
+         <label class="tgl"><input type="checkbox" id="tgOn" ${st.enabled ? 'checked' : ''}><span class="tgl-track"></span>알림 받기</label>
+         <div class="spacer"></div>
+         <button class="btn btn-sm" id="tgTest" type="button">테스트 발송</button>
+         <button class="btn btn-sm btn-danger" id="tgUnlink" type="button">연결 해제</button>
+       </div>
+       <p class="t-muted" style="font-size:12px;margin:8px 0 0">업무 배정·상태 변경·마감 임박 등 인앱 알림과 같은 내용을 텔레그램으로도 받습니다.</p>`
+    : `<p class="t-muted" style="font-size:12px;margin:0 0 8px">연결하면 담당 업무에 변경이 생길 때 텔레그램으로 알림을 받습니다.</p>
+       <button class="btn btn-sm btn-primary" id="tgLink" type="button">텔레그램 연결하기</button>
+       <span class="t-muted" id="tgLinkHint" style="font-size:12px;margin-left:8px"></span>`;
+
+  const refresh = () => drawTelegram(root, isAdmin);
+
+  $('#tgLink', box)?.addEventListener('click', async () => {
+    try {
+      const { url, expiresInMin } = await api('POST', '/telegram/link');
+      window.open(url, '_blank', 'noopener');
+      $('#tgLinkHint', box).innerHTML =
+        `텔레그램에서 <b>시작</b>을 누르세요 (${expiresInMin}분 내). <button class="btn btn-sm" id="tgDone" type="button">연결 확인</button>`;
+      $('#tgDone', box).addEventListener('click', refresh);
+    } catch (e) { toast(e.message, true); }
+  });
+  $('#tgUnlink', box)?.addEventListener('click', async () => {
+    try { await api('POST', '/telegram/unlink'); toast('연결을 해제했습니다'); refresh(); }
+    catch (e) { toast(e.message, true); }
+  });
+  $('#tgOn', box)?.addEventListener('change', async (e) => {
+    try { await api('POST', '/telegram/toggle', { on: e.target.checked }); toast(e.target.checked ? '알림을 켰습니다' : '알림을 껐습니다'); }
+    catch (err) { toast(err.message, true); e.target.checked = !e.target.checked; }
+  });
+  $('#tgTest', box)?.addEventListener('click', async () => {
+    try { await api('POST', '/telegram/test'); toast('테스트 메시지를 보냈습니다'); }
+    catch (e) { toast(e.message, true); }
+  });
+}
+
 function openSettings() {
   const isAdmin = state.user?.role === 'admin';
   // 로컬 편집 사본(저장 시 한 번에 반영)
@@ -2929,6 +2982,8 @@ function openSettings() {
         <div class="field full"><label>새 비밀번호 (8자 이상)</label><input class="input" name="next" type="password"></div>
         <div class="field full"><button class="btn btn-sm btn-primary" id="savePw" type="button">비밀번호 변경</button></div>
       </form>
+      <div class="section-title">텔레그램 알림</div>
+      <div id="tgBox"><p class="t-muted" style="font-size:12px;margin:0">불러오는 중…</p></div>
       <div class="section-title">도움말</div>
       <p class="t-muted" style="font-size:12px;margin:0 0 8px">처음 사용이 익숙하지 않다면 안내 둘러보기를 다시 볼 수 있습니다.
         <button class="btn btn-sm" id="tourAgain" type="button" style="margin-left:6px">둘러보기 다시 보기</button></p>
@@ -2954,6 +3009,7 @@ function openSettings() {
     try { await api('POST', '/auth/password', body); toast('비밀번호가 변경되었습니다'); $('#pwForm', root).reset(); modalDirty = false; }
     catch (e) { toast(e.message, true); }
   });
+  drawTelegram(root, isAdmin);
   if (!isAdmin) return;
 
   // --- 업무 구분 편집 ---
